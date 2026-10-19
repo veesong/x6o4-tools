@@ -4,6 +4,15 @@
   "description": "RSS Cloud 的 AI 技能与命令行工具：未读/收藏文章生成 epub 推送到 Kindle、收藏转 Markdown 归档进笔记库",
   "license": "MIT",
   "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veesong/x6o4-tools.git"
+  },
+  "keywords": ["rss", "kindle", "epub", "obsidian", "cli"],
+  "files": [
+    "cli/",
+    "docs/cli.md"
+  ],
   "bin": {
     "x6o4": "cli/x6o4.js"
   },

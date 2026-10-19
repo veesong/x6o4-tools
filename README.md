@@ -35,16 +35,15 @@ AI 会做完所有事。只有一步会停下来等你：需要你亲自在终�
 
 ### 路线二：自己动手装
 
-你的电脑需要先装好 [Node.js](https://nodejs.org)（选 18 或更高版本，安装时一路点「下一步」就行）。然后打开终端（Windows 在开始菜单搜「终端」或「命令提示符」），逐行输入下面的命令：
+你的电脑需要先装好 [Node.js](https://nodejs.org)（选 18 或更高版本，安装时一路点「下一步」就行）。然后打开终端（Windows 在开始菜单搜「终端」或「命令提示符」），输入：
 
 ```bash
-git clone https://github.com/veesong/x6o4-tools
-cd x6o4-tools
-npm install
-npm install -g .
+npm install -g x6o4-tools
 ```
 
-在国内如果安装很慢或失败，把第三条换成 `npm install --registry=https://registry.npmmirror.com` 再试。
+在国内如果安装很慢或失败，换成 `npm install -g x6o4-tools --registry=https://registry.npmmirror.com` 再试。
+
+装好后命令行就能用了（输入 `x6o4` 试试）。如果你还要「AI 技能」（让 AI 一句话帮你推送），把[这个仓库](https://github.com/veesong/x6o4-tools)里的 `skills` 文件夹交给 AI 助手安装，或参考仓库说明。
 
 ## 第一次使用：登录一次，以后不用再管
 

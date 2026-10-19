@@ -18,6 +18,8 @@ const DEFAULTS = {
   base_url: OFFICIAL_BASE_URL,
   token: '',
   kindle_email: '',
+  // 发信方式：smtp（默认，配授权码）或 agently（agent mail 产品的命令行工具，先 agently-cli auth login）
+  mail_transport: 'smtp',
   smtp: { preset: '', host: '', port: 465, secure: true, user: '', pass: '' },
   obsidian: { vault_dir: '', subdir: 'RSS', assets_subdir: 'RSS/assets', download_images: true },
   epub: {
@@ -95,7 +97,9 @@ function check(cfg, { needKindle = false, needObsidian = false } = {}) {
   const obsidian = cfg.obsidian || {};
   if (needKindle) {
     if (!cfg.kindle_email) missing.push('kindle_email（Kindle 接收邮箱）');
-    if (!smtp.host || !smtp.user || !smtp.pass) {
+    if (cfg.mail_transport === 'agently') {
+      // 发信走本机 agently-cli，无需 SMTP 配置；是否已安装登录由发送时校验。
+    } else if (!smtp.host || !smtp.user || !smtp.pass) {
       missing.push('smtp（host/user/pass，常见邮箱可用 --preset 一键填）');
     }
   }

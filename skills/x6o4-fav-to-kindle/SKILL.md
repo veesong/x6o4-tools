@@ -33,4 +33,4 @@ description: 把 RSS Cloud 收藏（星标）文章生成 epub 电子书自动�
 
 ## 失败处理与铁律
 
-同「未读转 Kindle」技能：错误完整呈现；正文、令牌、授权码不进对话；Kindle 邮箱需国际区 @kindle.com 且发件地址已加亚马逊认可列表。
+同「未读转 Kindle」技能：错误完整呈现；正文、令牌、授权码不进对话；Kindle 邮箱需国际区 @kindle.com 且发件地址已加亚马逊认可列表。配置 `mail_transport` 为 `agently` 时无授权码，发送问题按该技能「失败处理」里的 agently 条目处理。

@@ -21,12 +21,15 @@
 | `base_url` | 服务地址 | 官方地址（一般不要改） |
 | `token` | 登录得到的长期令牌 | 空（`login` 自动写入） |
 | `kindle_email` | 你的 Kindle 接收邮箱 | 空 |
-| `smtp` | 发件邮箱：`preset` / `host` / `port` / `secure` / `user` / `pass` | 空 |
+| `mail_transport` | 发信方式：`smtp` 或 `agently` | `smtp` |
+| `smtp` | 发件邮箱：`preset` / `host` / `port` / `secure` / `user` / `pass`（仅 `smtp` 方式需要） | 空 |
 | `obsidian` | 笔记库：`vault_dir`（必填）、`subdir`、`assets_subdir`、`download_images` | `RSS`、`RSS/assets`、`true` |
 | `epub` | 电子书生成参数：`image_max_width` / `image_jpeg_quality` / `image_grayscale` / `max_total_mb` / `max_articles_per_book` | `1200` / `70` / `true` / `20` / `50` |
 | `unread` | 单次推送篇数上限 `max_articles_per_run` | `20` |
 
 `smtp.preset` 可选 `qq` / `163` / `gmail` / `outlook` / `icloud`：选好后服务器参数自动填上，你只需再填 `user`（邮箱账号）和 `pass`（**授权码**，不是登录密码；获取方法见 README）。
+
+`mail_transport` 填 `agently` 时改用 agent mail（腾讯的独立 Agent 邮箱产品，非 QQ 邮箱）的官方命令行工具 [agently-cli](https://agent.qq.com/doc/cli-setup.md) 发信（先 `npm install -g @tencent-qqmail/agently-cli`，再在终端运行 `agently-cli auth login` 完成一次浏览器授权），此时不需要填 `smtp` 的任何字段、也不需要授权码。
 
 ## 子命令一览
 
@@ -68,7 +71,7 @@
 
 ### `x6o4 send-kindle --file 文件1[,文件2...] [--subject 标题]`
 
-把电子书发到你的 Kindle 邮箱。多册合并成一封邮件；总大小接近上限时自动打包成 zip（亚马逊会自动解压）。
+把电子书发到你的 Kindle 邮箱。多册合并成一封邮件；总大小接近上限时自动打包成 zip（亚马逊会自动解压）。按配置 `mail_transport` 决定走 SMTP 还是 agently-cli。
 
 ### `x6o4 mark-read --ids 编号1,编号2`
 
@@ -95,3 +98,5 @@
 | 权益不足（SUBSCRIPTION_ 开头） | RSS Cloud 订阅到期 | 续订后继续 |
 | 请求过于频繁 | 操作太密集了 | 等一分钟再试 |
 | RSS 上游暂时不可用 | 服务暂时繁忙 | 稍后再试 |
+| 未找到 agently-cli 命令 | 用的 agently 发信方式，但电脑上还没装这个工具 | `npm install -g @tencent-qqmail/agently-cli` |
+| agently-cli 尚未登录 | 装了但没授权，或授权过期 | 终端运行 `agently-cli auth login` |

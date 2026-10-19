@@ -69,6 +69,8 @@ npm install -g .
 | Gmail | 先开启两步验证，然后到「我的账号」创建应用专用密码 |
 | Outlook / iCloud | 账户安全设置里的应用密码 |
 
+**不想申请授权码，也可以改用 agent mail 发信。** agent mail 是腾讯推出的一个独立邮箱产品（和 QQ 邮箱不是同一个东西，地址在 agent.qq.com），专门给 AI 助手用。它提供一个小工具（agently-cli），在浏览器里点一次授权链接就能发信，不需要授权码。想用它的话：注册一个 agent mail 邮箱，让 AI 助手帮你装好这个小工具，再在终端运行一次 `agently-cli auth login` 完成授权，最后把配置里的 `mail_transport` 改成 `agently` 即可。注意：发件地址就是这个 agent mail 邮箱，它同样要先加入亚马逊的认可名单。
+
 ## 日常使用（对 AI 说一句话就行）
 
 - 「把未读文章推到 Kindle」

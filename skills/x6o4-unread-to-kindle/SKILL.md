@@ -47,6 +47,7 @@ description: 把 RSS Cloud 未读文章生成 epub 电子书自动推送到 Kind
 
 - 任何命令失败：完整呈现错误原文（错误信息已含中文指引），不要静默吞掉、不要盲目重试。
 - 发送失败（授权码失效/未加白名单）：提示两个前提——SMTP 发件地址需加入亚马逊「认可的发件人」列表；亚马逊中国区个人文档服务已停运，需国际区 @kindle.com 邮箱。epub 已在本地，可数据线拷贝或 Send to Kindle 网页版上传（200MB）兜底。
+- 配置 `mail_transport` 为 `agently` 时（用 agent mail 产品的 agently-cli 发信，无授权码；agent mail 是腾讯的独立邮箱产品，不是 QQ 邮箱）：报「未找到 agently-cli 命令」提示先 `npm install -g @tencent-qqmail/agently-cli`；报未登录则引导用户在终端亲自运行 `agently-cli auth login`（浏览器授权，用户亲自完成，不要代操作）。
 - 令牌 401：引导重新 `x6o4 login`。
 
 ## 铁律

@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+# 本地配置与状态永远不入库（凭据只存用户主目录 ~/.x6o4-tools/，此处为双保险）
+config.local.json
+*.local.json

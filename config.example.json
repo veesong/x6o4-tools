@@ -1,0 +1,29 @@
+{
+  "base_url": "https://rss-cloud.x6o4.com",
+  "token": "x6o4 login 后自动写入，不要手工填写",
+  "kindle_email": "你的Kindle接收邮箱@example.com",
+  "smtp": {
+    "preset": "qq | 163 | gmail | outlook | icloud，选一个",
+    "host": "选预设后自动填充",
+    "port": 465,
+    "secure": true,
+    "user": "你的邮箱账号@example.com",
+    "pass": "邮箱授权码（不是登录密码，怎么获取见 README）"
+  },
+  "obsidian": {
+    "vault_dir": "你的笔记库文件夹在电脑上的位置",
+    "subdir": "RSS",
+    "assets_subdir": "RSS/assets",
+    "download_images": true
+  },
+  "epub": {
+    "image_max_width": 1200,
+    "image_jpeg_quality": 70,
+    "image_grayscale": true,
+    "max_total_mb": 20,
+    "max_articles_per_book": 50
+  },
+  "unread": {
+    "max_articles_per_run": 20
+  }
+}

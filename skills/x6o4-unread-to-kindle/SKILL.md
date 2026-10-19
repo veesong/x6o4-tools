@@ -7,7 +7,7 @@ description: 把 RSS Cloud 未读文章生成 epub 电子书自动推送到 Kind
 
 ## 前置检查（每次运行第一步）
 
-1. 确认命令行可用：`node <仓库路径>/cli/x6o4.js status`（全局安装过则 `x6o4 status`）。
+1. 确认命令行可用：`x6o4 status`（npm 全局安装：`npm install -g x6o4-tools`；未安装时也可 `node <仓库路径>/cli/x6o4.js status`）。
 2. 若报「配置未就绪」或令牌无效：引导用户在**终端亲自**运行 `x6o4 login`（交互式长命令，用户亲自输入邮箱密码，你不要代输、不要索要密码）；登录成功后再继续。
 3. 若 status 显示权益无效（SUBSCRIPTION_*）：如实告诉用户需要续订或领取试用后才能读取文章，终止本次。
 

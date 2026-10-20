@@ -29,7 +29,7 @@
 
 `smtp.preset` 可选 `qq` / `163` / `gmail` / `outlook` / `icloud`：选好后服务器参数自动填上，你只需再填 `user`（邮箱账号）和 `pass`（**授权码**，不是登录密码；获取方法见 README）。
 
-`mail_transport` 填 `agently` 时改用 agent mail（腾讯的独立 Agent 邮箱产品，非 QQ 邮箱）的官方命令行工具 [agently-cli](https://agent.qq.com/doc/cli-setup.md) 发信（先 `npm install -g @tencent-qqmail/agently-cli`，再在终端运行 `agently-cli auth login` 完成一次浏览器授权），此时不需要填 `smtp` 的任何字段、也不需要授权码。
+`mail_transport` 填 `agently` 时改用 agent mail（腾讯的独立 Agent 邮箱产品，非 QQ 邮箱）的官方命令行工具 [agently-cli](https://agent.qq.com/doc/cli-setup.md) 发信（先 `npm install -g @tencent-qqmail/agently-cli`，再在终端运行 `agently-cli auth login` 完成一次浏览器授权），此时不需要填 `smtp` 的任何字段、也不需要授权码。这种方式的邮箱总空间只有 1GB，因此每封邮件发送成功后会自动在「已发送」文件夹里找到它并永久删除——删除的只是发件箱里的副本，不影响对方收到邮件；万一删除失败也不影响推送，只会在结果里多一行提醒。
 
 ## 子命令一览
 
@@ -83,7 +83,7 @@
 
 ### `x6o4 send-kindle --file 文件1[,文件2...] [--subject 标题]`
 
-把电子书发到你的 Kindle 邮箱。多册合并成一封邮件；总大小接近上限时自动打包成 zip（亚马逊会自动解压）。按配置 `mail_transport` 决定走 SMTP 还是 agently-cli。
+把电子书发到你的 Kindle 邮箱。多册合并成一封邮件；总大小接近上限时自动打包成 zip（亚马逊会自动解压）。按配置 `mail_transport` 决定走 SMTP 还是 agently-cli；agently 方式发送成功后会自动永久删除「已发送」里的副本（见上文配置说明）。
 
 ### `x6o4 mark-read --ids 编号1,编号2`
 

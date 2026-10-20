@@ -4,7 +4,9 @@
 // 发信方式二选一（配置 mail_transport）：
 //  - smtp（默认）：nodemailer 直连发件邮箱服务器，需要授权码；
 //  - agently：调用本机 agently-cli 命令行（agent mail 产品的官方工具，
-//    先 `agently-cli auth login` 登录），不需要授权码。
+//    先 `agently-cli auth login` 登录），不需要授权码。发送成功后自动
+//    永久删除「已发送」里的这封邮件（该邮箱总空间只有 1GB，附件副本
+//    会很快占满）；清理失败不影响推送，只在结果里提示。
 // 人工兜底：邮件失败或内容超大时，epub 已在本地，可改用亚马逊 Send to Kindle
 // 网页版上传（单个文档最大 200MB）或数据线拷贝。
 const fsp = require('fs/promises');
@@ -99,12 +101,77 @@ function runAgently(args, cwd) {
   });
 }
 
+// —— 发送后清理「已发送」副本（仅 agently 方式）——
+// agent mail 邮箱总空间只有 1GB，推送邮件的附件常有几十 MB，副本留在
+// 「已发送」里很快占满。因此每封发送成功后自动永久删除它：先移入已删除
+// （已删除里的邮件 30 天内仍占空间），再彻底清除。清理失败不阻断推送。
+
+// 从命令输出里取 JSON 结果。输出可能夹带提示文字，取首个「{」到末个
+//「}」之间的片段再解析；解析不出返回空值，由调用方按失败处理。
+function agentlyJson(stdout) {
+  const s = String(stdout || '');
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try { return JSON.parse(s.slice(start, end + 1)); } catch { return null; }
+}
+
+// 在「已发送」列表里找刚发出的那封：主题完全一致，且时间不早于发信前
+// （留 5 分钟余量，容忍本机与服务器时钟不一致）；同主题取最新一封。
+function findSentMessageId(stdout, subject, sinceMs) {
+  const j = agentlyJson(stdout);
+  const arr = j && j.data && Array.isArray(j.data.data) ? j.data.data : [];
+  const hits = arr
+    .filter((m) => m.subject === subject && Date.parse(m.created_at || '') >= sinceMs - 5 * 60 * 1000)
+    .sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0));
+  return hits.length ? hits[0].message_id : null;
+}
+
+// 移入已删除与彻底清除属于敏感操作，命令行要求两步确认：首次调用只返回
+// 确认令牌，带令牌再调一次才生效。推送流程无人值守，这里自动完成两步。
+async function runAgentlyConfirmed(run, args, cwd) {
+  const first = await run(args, cwd);
+  if (first.err) return first;
+  const j = agentlyJson(first.stdout);
+  const token = j && j.data && j.data.confirmation_token;
+  if (!token) return first; // 首次未返回令牌，说明已直接生效
+  return run([...args, '--confirmation-token', token], cwd);
+}
+
+// 删除「已发送」里刚发出的这封邮件。成功返回空值，失败返回提醒文字
+// （不抛错：清理是收尾动作，不应让已成功的推送整体报错）。
+async function deleteSentMessage(run, cwd, subject, sinceMs) {
+  let id = null;
+  let listErr = '';
+  for (let attempt = 0; attempt < 2 && !id; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 3000)); // 刚发出的邮件可能要等几秒才出现在列表里
+    const lr = await run(['message', '+list', '--dir', 'sent', '--limit', '10'], cwd);
+    if (lr.err) {
+      listErr = String(lr.stderr || lr.err.message || '').trim().slice(0, 200);
+      continue;
+    }
+    id = findSentMessageId(lr.stdout, subject, sinceMs);
+  }
+  if (!id) {
+    return listErr
+      ? `查询「已发送」列表失败（${listErr}），这封邮件的副本未清理`
+      : `「已发送」里没找到主题为「${subject}」的邮件，副本未清理`;
+  }
+  const trash = await runAgentlyConfirmed(run, ['message', '+trash', '--id', id], cwd);
+  if (trash.err) return `邮件 ${id} 移入已删除失败，副本未清理`;
+  const del = await runAgentlyConfirmed(run, ['message', '+delete', '--id', id], cwd);
+  if (del.err) return `邮件 ${id} 已移入已删除，但彻底清除失败（30 天后自动清除，也可在邮箱里手动清空）`;
+  return null;
+}
+
 async function sendViaAgently(groups, cfg, { subject }) {
   const sent = [];
+  const warnings = [];
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
     const subj = groups.length > 1 ? `${subject}（${i + 1}/${groups.length}）` : subject;
     const body = `x6o4-tools 推送：${g.files.length} 个附件（epub 电子书）。`;
+    const sinceMs = Date.now(); // 发信前的时间戳，用来从「已发送」里认出这封邮件
     const r = await runAgently(agentlyArgs(g, { to: cfg.kindle_email, subject: subj, body }), g.dir);
     if (r.err) {
       const hint = /ENOENT/i.test(String(r.err.message))
@@ -116,8 +183,10 @@ async function sendViaAgently(groups, cfg, { subject }) {
         '人工兜底：亚马逊 Send to Kindle 网页版上传（单个文档最大 200MB）或数据线拷贝，epub 文件已在本地');
     }
     sent.push(...g.files.map((a) => a.name));
+    const warn = await deleteSentMessage((a, c) => runAgently(a, c), g.dir, subj, sinceMs);
+    if (warn) warnings.push(warn);
   }
-  return { emails: groups.length, attachments: sent };
+  return { emails: groups.length, attachments: sent, warnings };
 }
 
 async function sendViaSmtp(groups, cfg, { subject }) {
@@ -162,7 +231,7 @@ async function sendViaSmtp(groups, cfg, { subject }) {
     }
     sent.push(...g.files.map((a) => a.name));
   }
-  return { emails: groups.length, attachments: sent };
+  return { emails: groups.length, attachments: sent, warnings: [] };
 }
 
 async function sendKindle(files, cfg, { subject } = {}) {
@@ -190,4 +259,4 @@ async function sendKindle(files, cfg, { subject } = {}) {
   }
 }
 
-module.exports = { sendKindle, planGroups, agentlyArgs };
+module.exports = { sendKindle, planGroups, agentlyArgs, findSentMessageId, deleteSentMessage };

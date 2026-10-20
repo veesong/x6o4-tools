@@ -272,6 +272,7 @@ async function main() {
     const files = String(flags.file).split(',').map((s) => s.trim()).filter(Boolean);
     const r = await sendKindle(files, cfg, { subject: flags.subject });
     console.log(`✔ 已发送 ${r.emails} 封邮件（附件 ${r.attachments.length} 个）到 ${cfg.kindle_email}`);
+    for (const w of r.warnings || []) console.log(`⚠ ${w}（不影响本次推送）`);
     return;
   }
 

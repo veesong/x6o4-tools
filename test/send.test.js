@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { planGroups, agentlyArgs, sendKindle } = require('../cli/send');
+const { planGroups, agentlyArgs, sendKindle, findSentMessageId, deleteSentMessage } = require('../cli/send');
 const config = require('../cli/config');
 
 test('check：agently 发信方式不要求 SMTP 配置', () => {
@@ -53,6 +53,73 @@ test('agentlyArgs：收件人/主题/正文/附件路径按命令行格式组装
     '--body', '内容', '--confirmed',
     '--attachment', 'a.epub', '--attachment', 'b.epub',
   ]);
+});
+
+test('findSentMessageId：按主题与发信时间认邮件，同主题取最新', () => {
+  const now = Date.now();
+  const list = JSON.stringify({ ok: true, data: { data: [
+    { message_id: 'msg_old', subject: '书', created_at: new Date(now - 3600_000).toISOString() },
+    { message_id: 'msg_new', subject: '书', created_at: new Date(now - 1000).toISOString() },
+    { message_id: 'msg_other', subject: '别的书', created_at: new Date(now - 1000).toISOString() },
+  ] } });
+  assert.strictEqual(findSentMessageId(list, '书', now - 60_000), 'msg_new', '同主题取最新、不同主题不碰');
+  // 早于发信时间超过时钟余量（5 分钟）的同主题旧邮件不碰
+  const oldOnly = JSON.stringify({ ok: true, data: { data: [
+    { message_id: 'msg_old', subject: '书', created_at: new Date(now - 20 * 60_000).toISOString() },
+  ] } });
+  assert.strictEqual(findSentMessageId(oldOnly, '书', now), null, '太旧的邮件不匹配');
+  // 输出前后夹带提示文字时仍能解析；完全不是 JSON 时返回空值
+  assert.strictEqual(findSentMessageId(`提示文字\n${list}\n尾部文字`, '书', now - 60_000), 'msg_new');
+  assert.strictEqual(findSentMessageId('not json', '书', now), null);
+});
+
+test('deleteSentMessage：查列表后自动完成两步确认，彻底清除副本', async () => {
+  const now = Date.now();
+  const calls = [];
+  // 模拟命令行：列表返回刚发的邮件；移入已删除与彻底清除首次只给确认令牌
+  const run = async (args) => {
+    const line = args.join(' ');
+    calls.push(line);
+    if (line.includes('+list')) {
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { data: [
+        { message_id: 'msg_1', subject: '书', created_at: new Date(now - 1000).toISOString() },
+      ] } }) };
+    }
+    if ((line.includes('+trash') || line.includes('+delete')) && !line.includes('--confirmation-token')) {
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { confirmation_token: 'ctk_1' } }) };
+    }
+    return { err: null, stderr: '', stdout: JSON.stringify({ ok: true }) };
+  };
+  const warn = await deleteSentMessage(run, '.', '书', now - 60_000);
+  assert.strictEqual(warn, null, '清理成功不产生提醒');
+  assert.deepStrictEqual(calls, [
+    'message +list --dir sent --limit 10',
+    'message +trash --id msg_1',
+    'message +trash --id msg_1 --confirmation-token ctk_1',
+    'message +delete --id msg_1',
+    'message +delete --id msg_1 --confirmation-token ctk_1',
+  ]);
+});
+
+test('deleteSentMessage：清理失败只返回提醒文字，不抛错', async () => {
+  // 列表里始终找不到 → 提醒未清理
+  const emptyRun = async () => ({ err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { data: [] } }) });
+  const warn1 = await deleteSentMessage(emptyRun, '.', '书', Date.now());
+  assert.match(warn1, /没找到/);
+  // 彻底清除失败 → 提醒已移入已删除
+  const now = Date.now();
+  const failRun = async (args) => {
+    const line = args.join(' ');
+    if (line.includes('+list')) {
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { data: [
+        { message_id: 'msg_2', subject: '书', created_at: new Date(now - 1000).toISOString() },
+      ] } }) };
+    }
+    if (line.includes('+trash')) return { err: null, stderr: '', stdout: JSON.stringify({ ok: true }) };
+    return { err: new Error('退出码 1'), stderr: 'boom', stdout: '' };
+  };
+  const warn2 = await deleteSentMessage(failRun, '.', '书', now - 60_000);
+  assert.match(warn2, /彻底清除失败/);
 });
 
 test('sendKindle：缺基础字段时给出明确错误', async () => {

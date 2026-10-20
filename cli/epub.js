@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const JSZip = require('jszip');
 const sharp = require('sharp');
 const { cleanHtml } = require('./htmlclean');
+const { sanitizeFilename } = require('./md');
 
 const MB = 1024 * 1024;
 const SINGLE_IMAGE_MAX = 3 * MB;     // 单张处理后仍超 3MB 时逐级降质量兜底
@@ -237,7 +238,12 @@ async function buildEpub(entries, opts) {
   if (cur.length) volumes.push(cur);
 
   // 第三遍：逐册组装打包
-  const out = String(opts.out || `x6o4-${new Date().toISOString().slice(0, 10)}`).replace(/\.epub$/i, '');
+  // 默认文件名「RSS 阅读-yyyyMMdd-副标题」：副标题从本批文章里随机取一篇
+  // 标题，同一天多次生成也不易重名。
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const pickTitle = entries.length ? entries[Math.floor(Math.random() * entries.length)].title : '精选';
+  const out = String(opts.out || `RSS 阅读-${dateStr}-${sanitizeFilename(pickTitle)}`).replace(/\.epub$/i, '');
   const results = [];
   for (let v = 0; v < volumes.length; v++) {
     const vol = volumes[v];

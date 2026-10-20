@@ -212,7 +212,7 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    const results = await buildEpub(picked, { title: flags.title || 'x6o4 文章精选', out: flags.out || `x6o4-${Date.now()}`, cfg });
+    const results = await buildEpub(picked, { title: flags.title || 'x6o4 文章精选', out: flags.out, cfg });
     for (const r of results) {
       console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 → ${r.file}`);
     }
@@ -297,7 +297,7 @@ function usage() {
               [--limit N] [--offset N] [--order ...] [--direction ...] [--content full|none]
               [--min-reading-time N] [--excerpt N] [--no-skip-state] [--print] --out 文件
   x6o4 mark-read --ids 9001,9002
-  x6o4 build-epub --ids 9001,9002 --from entries.json --title 书名 --out 文件
+  x6o4 build-epub --ids 9001,9002 --from entries.json --title 书名 [--out 文件]
   x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]
   x6o4 export-md --from entries.json [--since 2026-01-01]
   x6o4 skip add --ids ... [--days 30] | list | clear

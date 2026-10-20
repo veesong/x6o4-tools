@@ -17,18 +17,18 @@ description: 把 RSS Cloud 未读文章生成 epub 电子书自动推送到 Kind
 
 1. **取候选**（元数据 + 160 字摘要进对话，全文留在本地文件）：
    ```
-   x6o4 entries --status unread --min-reading-time 3 --limit 100 --print --out /tmp/x6o4-unread.json
+   x6o4 entries --status unread --order published_at --direction asc --min-reading-time 3 --limit 100 --print --out /tmp/x6o4-unread.json
    ```
    （Windows 用 `%TEMP%` 等临时目录；下同。被 30 天本地跳过记录排除的条目不会出现。）
 2. **语义细筛**：依据标题、来源、时长、摘要剔除不适合 Kindle 长阅读的——公告/通知、视频集合、纯图集、快讯短讯、招聘/广告帖。用户在对话里给过偏好的按偏好来。
-3. **定量**：按发布时间倒序取前 N 篇（N = 配置 `unread.max_articles_per_run`，默认 20，取满即止；不足有多少发多少；筛完 0 篇则不发不标，直接汇报「没有适合的内容」）。
-4. **生成 epub**：
+3. **定量**：按发布时间从旧到新取前 N 篇（N = 配置 `unread.max_articles_per_run`，默认 20，取满即止；不足有多少发多少；筛完 0 篇则不发不标，直接汇报「没有适合的内容」）。生成与阅读顺序同为从旧到新。
+4. **生成 epub**（不传 `--out`，文件名自动为「RSS 阅读-当天日期-随机文章标题」，从命令输出的文件路径取实际文件名）：
    ```
-   x6o4 build-epub --ids 9001,9002,... --from /tmp/x6o4-unread.json --title x6o4 未读精选 YYYY-MM-DD --out /tmp/x6o4-unread
+   x6o4 build-epub --ids 9001,9002,... --from /tmp/x6o4-unread.json --title RSS 未读精选 YYYY-MM-DD
    ```
-5. **发送**（自动，一封邮件带全部分册）：
+5. **发送**（自动，一封邮件带全部分册；文件用上一步输出里的实际路径）：
    ```
-   x6o4 send-kindle --file /tmp/x6o4-unread.epub[,第2册,...] --subject <书名>
+   x6o4 send-kindle --file <实际文件1>[,第2册,...] --subject <书名>
    ```
 6. **标记已读**（仅实际进入 epub 的条目；发送受理后自动执行）：
    ```

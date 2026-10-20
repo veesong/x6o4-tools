@@ -65,9 +65,9 @@
 | `--print` | 在屏幕上显示元数据和摘要（不显示正文） |
 | `--no-skip-state` | 不按「跳过记录」过滤（默认会过滤） |
 
-### `x6o4 build-epub --ids 编号1,编号2 --from entries文件.json --title 书名 --out 文件`
+### `x6o4 build-epub --ids 编号1,编号2 --from entries文件.json --title 书名 [--out 文件]`
 
-把指定文章做成 epub 电子书，正文取自 `entries` 命令写出的文件。篇数或图片体积超过单册上限时自动分成多册。
+把指定文章做成 epub 电子书，正文取自 `entries` 命令写出的文件。篇数或图片体积超过单册上限时自动分成多册。不指定 `--out` 时文件名自动生成为「RSS 阅读-日期-副标题」（日期为当天，副标题随机取本批一篇文章的标题），同一天多次生成也不易重名。
 
 ### `x6o4 send-kindle --file 文件1[,文件2...] [--subject 标题]`
 

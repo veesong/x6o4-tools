@@ -81,3 +81,21 @@ test('buildEpub：结构（mimetype 首条且不压缩/清单/章节/引用一�
   assert.match(opf, /测试书（一）/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-文章标题', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-epub-'));
+  const entry = {
+    id: 1, title: '某篇很精彩的文章', url: 'https://e.example/1', author: '作者',
+    published_at: '2026-10-18T00:00:00Z', reading_time: 5, feed: { title: '源' },
+    content: '<p>正文。</p>',
+  };
+  const results = await buildEpub([entry], { cfg: { epub: {} } }); // 故意不传 out
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const name = path.basename(results[0].file);
+  assert.match(name, new RegExp(`^RSS 阅读-${dateStr}-.+\\.epub$`));
+  assert.ok(name.includes('某篇很精彩的文章'));
+  fs.rmSync(dir, { recursive: true, force: true });
+  // 文件生成在当前工作目录，测试后清掉
+  try { fs.rmSync(path.resolve(name), { force: true }); } catch { /* 已随目录删除 */ }
+});

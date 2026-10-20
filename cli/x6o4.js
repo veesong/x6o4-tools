@@ -103,6 +103,16 @@ function enrichHook(cfgMap) {
   return { stats, enrich: async (entry) => { await enrichEntries([entry], cfgMap, { stats }); } };
 }
 
+// 分页翻取时按编号去重（两页之间若有文章被标记已读，窗口会前移导致重复）
+function dedupEntries(list) {
+  const seen = new Set();
+  return list.filter((e) => {
+    if (seen.has(e.id)) return false;
+    seen.add(e.id);
+    return true;
+  });
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseArgs(rest);
@@ -202,16 +212,42 @@ async function main() {
     const minRT = Number(flags['min-reading-time']) || 0;
     const excerptLen = Number(flags.excerpt) || 160;
     const skip = flags['no-skip-state'] ? {} : loadSkipState();
-    let res = await client.entries(params);
+    const applyFilters = (list) => {
+      let r = list;
+      if (Object.keys(skip).length) r = r.filter((e) => !skip[e.id]);
+      if (minRT > 0) r = r.filter((e) => (e.reading_time || 0) >= minRT);
+      return r;
+    };
+    // --fill N：按发布顺序逐页拉取（服务端每页上限 100），跳过记录与时长
+    // 过滤在客户端生效，凑够 N 条可推候选即停——避免大量短文占住窗口导致
+    // 永远取不到后面的长文。最多翻 50 页作为保护上限。
+    const fill = Number(flags.fill) || 0;
+    let res;
+    let rawAll = [];
+    let entries;
+    if (fill > 0) {
+      let offset = Number(flags.offset) || 0;
+      for (let page = 0; page < 50; page++) {
+        res = await client.entries({ ...params, limit: 100, offset });
+        const batch = res.entries || [];
+        rawAll.push(...batch);
+        entries = applyFilters(rawAll);
+        if (entries.length >= fill || batch.length < 100) break;
+        offset += batch.length;
+      }
+      rawAll = dedupEntries(rawAll);
+      entries = applyFilters(rawAll).slice(0, fill);
+    } else {
+      res = await client.entries(params);
+      rawAll = res.entries || [];
+      entries = applyFilters(rawAll);
+    }
     const total = res.total;
-    let entries = res.entries || [];
-    const beforeSkip = entries.length;
-    if (Object.keys(skip).length) entries = entries.filter((e) => !skip[e.id]);
-    if (minRT > 0) entries = entries.filter((e) => (e.reading_time || 0) >= minRT);
+    const beforeSkip = rawAll.length;
     const out = flags.out;
     if (out) {
       fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-      fs.writeFileSync(out, JSON.stringify({ total, entries: res.entries }, null, 2));
+      fs.writeFileSync(out, JSON.stringify({ total, entries: rawAll }, null, 2));
     }
     if (flags.print) {
       const view = entries.map((e) => ({
@@ -220,12 +256,13 @@ async function main() {
         feed: e.feed ? e.feed.title : '',
         excerpt: excerptOf(e.content, excerptLen),
       }));
-      console.log(JSON.stringify({ total, filtered: entries.length, skipped_by_state: beforeSkip - entries.filter((e) => !skip[e.id]).length, entries: view }, null, 2));
+      const skippedByState = beforeSkip - rawAll.filter((e) => !skip[e.id]).length;
+      console.log(JSON.stringify({ total, fetched: rawAll.length, filtered: entries.length, skipped_by_state: skippedByState, entries: view }, null, 2));
       return;
     }
-    console.log(`共 ${total} 条；本次取 ${res.entries.length} 条` +
+    console.log(`共 ${total} 条；本次取 ${rawAll.length} 条` +
       `${minRT ? `（时长≥${minRT}分钟后 ${entries.length} 条）` : ''}` +
-      `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length + (minRT ? entries.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
+      `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? rawAll.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
       (out ? `；全文已写入 ${out}` : '（未指定 --out，正文未保存）'));
     return;
   }
@@ -348,7 +385,7 @@ function usage() {
                                  保存单源阅读设置到服务端（App 与网页面板共用；需读写令牌）
   x6o4 entries [--status unread|read] [--starred] [--feed-id N] [--category-id N]
               [--limit N] [--offset N] [--order ...] [--direction ...] [--content full|none]
-              [--min-reading-time N] [--excerpt N] [--no-skip-state] [--print] --out 文件
+              [--min-reading-time N] [--fill N] [--excerpt N] [--no-skip-state] [--print] --out 文件
   x6o4 mark-read --ids 9001,9002
   x6o4 build-epub --ids 9001,9002 --from entries.json [--title 书名] [--out 文件]
   x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]

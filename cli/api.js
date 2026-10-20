@@ -23,7 +23,7 @@ function friendlyText(status, code, message) {
       return '请求过于频繁，请等待约一分钟再试';
     case 'MINIFLUX_UNAVAILABLE':
     case 'ACCOUNT_PROVISIONING_FAILED':
-      return 'RSS 上游暂时不可用或账号开通中，请稍后重试';
+      return 'RSS 上游暂时不可用或账号开通中，请稍后重试；若刚刚按编号过滤（feed/category），请先运行 x6o4 feeds 核对编号是否存在——不存在的编号同样会报这个错';
     default:
       if (code && code.startsWith('SUBSCRIPTION_')) {
         return `RSS Cloud 权益不足（${message || code}），续订或领取试用后即可使用`;

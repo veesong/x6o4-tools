@@ -11,6 +11,7 @@
   "keywords": ["rss", "kindle", "epub", "obsidian", "cli"],
   "files": [
     "cli/",
+    "skills/",
     "docs/cli.md"
   ],
   "bin": {

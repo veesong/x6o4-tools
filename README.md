@@ -27,7 +27,7 @@
 
 ### 路线一：让 AI 帮你装（推荐）
 
-打开你平时用的 AI 助手（ZCode、Claude Code 等），把这个仓库的地址发给它，说：
+打开你平时用的 AI 助手（Codex、Workbuddy、ZCode、CLAUDE Code 等），把这个仓库的地址发给它，说：
 
 > 帮我根据这个仓库安装并配置里面的工具和技能：https://github.com/veesong/x6o4-tools
 
@@ -43,7 +43,13 @@ npm install -g x6o4-tools
 
 在国内如果安装很慢或失败，换成 `npm install -g x6o4-tools --registry=https://registry.npmmirror.com` 再试。
 
-装好后命令行就能用了（输入 `x6o4` 试试）。如果你还要「AI 技能」（让 AI 一句话帮你推送），把[这个仓库](https://github.com/veesong/x6o4-tools)里的 `skills` 文件夹交给 AI 助手安装，或参考仓库说明。
+装好后命令行就能用了（输入 `x6o4` 试试）。如果你还要「AI 技能」（让 AI 一句话帮你推送），再执行一次：
+
+```bash
+x6o4 skills install
+```
+
+它会把技能装进 `.agents` 文件夹（这是 AI 助手行业约定共用的技能位置，Codex、Workbuddy、ZCode 等都会识别，CLAUDE Code 看个人设备具体配置情况需要检查是否安装成功）。技能和命令行是一体的，以后 `npm update -g x6o4-tools` 升级时两者一起更新。
 
 ## 第一次使用：登录一次，以后不用再管
 

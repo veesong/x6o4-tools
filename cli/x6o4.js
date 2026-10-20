@@ -10,6 +10,7 @@ const { Api, ApiError } = require('./api');
 const { runLogin, printTokenTable } = require('./login');
 const { buildEpub } = require('./epub');
 const { sendKindle } = require('./send');
+const { installSkills } = require('./skills');
 const { exportMd } = require('./md');
 
 const SKIP_TTL_DAYS = 30;
@@ -238,6 +239,25 @@ async function main() {
     return;
   }
 
+  if (cmd === 'skills') {
+    const sub = positional[0] || 'install';
+    if (sub !== 'install') { console.error('用法：x6o4 skills install'); process.exitCode = 1; return; }
+    const results = installSkills();
+    const labels = {
+      linked: '✔ 已链接（随 npm 包自动更新）',
+      copied: '✔ 已复制（链接创建失败时的兜底，不随 npm 自动更新）',
+      skipped: '↷ 跳过（该目录已存在且不是本工具的链接，未改动）',
+      missing: '✘ 安装包里找不到该技能',
+    };
+    let bad = false;
+    for (const r of results) {
+      console.log(`${r.name}：${labels[r.action]}`);
+      if (r.action === 'missing') bad = true;
+    }
+    if (bad) process.exitCode = 1;
+    return;
+  }
+
   if (cmd === 'skip') {
     const sub = positional[0] || 'list';
     if (sub === 'add') {
@@ -281,6 +301,7 @@ function usage() {
   x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]
   x6o4 export-md --from entries.json [--since 2026-01-01]
   x6o4 skip add --ids ... [--days 30] | list | clear
+  x6o4 skills install           把三个 AI 技能链接到 ~/.agents/skills（各助手通用）
   x6o4 config path|check`);
 }
 

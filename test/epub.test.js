@@ -95,6 +95,7 @@ test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-文章标�
   const name = path.basename(results[0].file);
   assert.match(name, new RegExp(`^RSS 阅读-${dateStr}-.+\\.epub$`));
   assert.ok(name.includes('某篇很精彩的文章'));
+  assert.strictEqual(results[0].title, name.replace(/\.epub$/, ''), '书内书名与文件名一致');
   fs.rmSync(dir, { recursive: true, force: true });
   // 文件生成在当前工作目录，测试后清掉
   try { fs.rmSync(path.resolve(name), { force: true }); } catch { /* 已随目录删除 */ }

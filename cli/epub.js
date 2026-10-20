@@ -237,21 +237,27 @@ async function buildEpub(entries, opts) {
   if (cur.length) volumes.push(cur);
 
   // 第三遍：逐册组装打包
-  // 默认文件名「RSS 阅读-yyyyMMdd-副标题」：副标题随机取自该册文章的标题，
-  // 同一天多次生成、多册之间都不易重名。手动指定 out 时保持「前缀-册号」。
+  // 默认名「RSS 阅读-yyyyMMdd-副标题」：副标题随机取自该册文章的标题，
+  // 同一天多次生成、多册之间都不易重名，且文件名与书内书名完全一致
+  // （Kindle 书库显示文件名、多数阅读器显示内部书名，统一后两边相同）。
+  // 手动指定文件前缀或书名时，仍按「前缀-册号」「书名（一）（二）」。
   const now = new Date();
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
   const outPrefix = opts.out ? String(opts.out).replace(/\.epub$/i, '') : '';
   const results = [];
   for (let v = 0; v < volumes.length; v++) {
     const vol = volumes[v];
-    const bookTitle = volumeTitle(opts.title || 'x6o4 文章精选', v, volumes.length);
     let file;
-    if (outPrefix) {
-      file = volumes.length > 1 ? `${outPrefix}-${v + 1}.epub` : `${outPrefix}.epub`;
+    let bookTitle;
+    if (outPrefix || opts.title) {
+      bookTitle = volumeTitle(opts.title || 'x6o4 文章精选', v, volumes.length);
+      file = outPrefix
+        ? (volumes.length > 1 ? `${outPrefix}-${v + 1}.epub` : `${outPrefix}.epub`)
+        : `RSS 阅读-${dateStr}-${bookTitle}.epub`;
     } else {
       const pickTitle = vol.length ? vol[Math.floor(Math.random() * vol.length)].entry.title : '精选';
-      file = `RSS 阅读-${dateStr}-${sanitizeFilename(pickTitle)}.epub`;
+      bookTitle = `RSS 阅读-${dateStr}-${sanitizeFilename(pickTitle)}`;
+      file = `${bookTitle}.epub`;
     }
     const zip = new JSZip();
     zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' }); // 必须首条目且不压缩

@@ -257,7 +257,7 @@ async function main() {
       return;
     }
     const ftStats = await enrichEntries(picked, await readingConfigMap(client));
-    const results = await buildEpub(picked, { title: flags.title || 'x6o4 文章精选', out: flags.out, cfg });
+    const results = await buildEpub(picked, { title: flags.title, out: flags.out, cfg });
     for (const r of results) {
       console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 → ${r.file}`);
     }

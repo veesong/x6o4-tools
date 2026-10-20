@@ -1,6 +1,6 @@
 {
   "name": "x6o4-tools",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "RSS Cloud 的 AI 技能与命令行工具：未读/收藏文章生成 epub 推送到 Kindle、收藏转 Markdown 归档进笔记库",
   "license": "MIT",
   "type": "commonjs",

@@ -113,6 +113,14 @@ function dedupEntries(list) {
   });
 }
 
+// --sync 配合筛选参数时的游标键：如 category:5、feed:12、category:5|feed:12。
+function syncFilterKey(flags) {
+  const parts = [];
+  if (flags['category-id']) parts.push(`category:${flags['category-id']}`);
+  if (flags['feed-id']) parts.push(`feed:${flags['feed-id']}`);
+  return parts.join('|');
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseArgs(rest);
@@ -205,13 +213,20 @@ async function main() {
     // --sync：增量模式。只取编号比本机游标大的文章，按编号升序（到达顺序），
     // 与阅读 App 的增量同步同一套机制；游标仅在 --out 成功写入后推进——
     // 中途中断的运行不推进，文章下次还会取到，不会悄悄漏掉。
+    // 带分类/订阅源筛选时游标单独记：筛选结果只是全部未读的一部分，若推进
+    // 全局游标，会越过其他分类里还没取过的未读，下次全量拉取就漏掉它们。
+    // 因此筛选拉取从「全局游标与该筛选自己游标的较大者」继续，结束时只
+    // 推进该筛选的游标；全局游标只由不带筛选的拉取推进。
     const useSync = !!flags.sync;
     if (useSync && (flags.order || flags.direction)) {
       console.error('✘ --sync 自带按编号升序，请去掉 --order/--direction（两者不能同用）');
       process.exitCode = 1;
       return;
     }
-    const cursor = useSync ? config.readCursor(config.SYNC_STATE_PATH) : 0;
+    const syncFilter = useSync ? syncFilterKey(flags) : '';
+    const globalCursor = useSync ? config.readCursor(config.SYNC_STATE_PATH) : 0;
+    const filterCursor = syncFilter ? config.readFilterCursor(config.SYNC_STATE_PATH, syncFilter) : 0;
+    const cursor = Math.max(globalCursor, filterCursor);
     const params = {
       status: flags.status, starred: flags.starred ? 'true' : '',
       feed_id: flags['feed-id'], category_id: flags['category-id'],
@@ -261,7 +276,9 @@ async function main() {
       fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
       fs.writeFileSync(out, JSON.stringify({ total, entries: rawAll }, null, 2));
       if (useSync && rawAll.length) {
-        config.writeCursor(config.SYNC_STATE_PATH, Math.max(...rawAll.map((e) => Number(e.id) || 0)));
+        const maxId = Math.max(...rawAll.map((e) => Number(e.id) || 0));
+        if (syncFilter) config.writeFilterCursor(config.SYNC_STATE_PATH, syncFilter, maxId);
+        else config.writeCursor(config.SYNC_STATE_PATH, maxId);
       }
     } else if (useSync) {
       console.error('⚠ 未指定 --out，游标未推进（下次仍从同一位置取）');
@@ -274,30 +291,46 @@ async function main() {
         excerpt: excerptOf(e.content, excerptLen),
       }));
       const skippedByState = beforeSkip - rawAll.filter((e) => !skip[e.id]).length;
-      const syncInfo = useSync ? { sync_cursor_before: cursor } : {};
+      const syncInfo = useSync ? { sync_cursor_before: cursor, sync_scope: syncFilter || 'all' } : {};
       console.log(JSON.stringify({ total, fetched: rawAll.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, entries: view }, null, 2));
       return;
     }
+    const cursorAfter = useSync
+      ? (syncFilter ? config.readFilterCursor(config.SYNC_STATE_PATH, syncFilter) : config.readCursor(config.SYNC_STATE_PATH))
+      : 0;
     console.log(`共 ${total} 条；本次取 ${rawAll.length} 条` +
       `${minRT ? `（时长≥${minRT}分钟后 ${entries.length} 条）` : ''}` +
       `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? rawAll.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
-      (useSync ? `；增量游标 ${cursor} → ${config.readCursor(config.SYNC_STATE_PATH)}` : '') +
+      (useSync
+        ? (syncFilter
+          ? `；增量游标[${syncFilter}] ${filterCursor} → ${cursorAfter}（全局游标 ${globalCursor} 未动）`
+          : `；增量游标 ${cursor} → ${cursorAfter}`)
+        : '') +
       (out ? `；全文已写入 ${out}` : '（未指定 --out，正文未保存）'));
     return;
   }
 
   if (cmd === 'sync') {
     const sub = positional[0] || 'status';
+    const filter = syncFilterKey(flags);
     if (sub === 'reset') {
-      config.writeCursor(config.SYNC_STATE_PATH, 0);
-      console.log('✔ 增量游标已清零，下次拉取将从最早的未读重新开始');
+      // 不带筛选参数清零全部游标；带 --category-id/--feed-id 只清那一个筛选的。
+      config.clearCursors(config.SYNC_STATE_PATH, filter || undefined);
+      console.log(filter
+        ? `✔ 已清零筛选 ${filter} 的增量游标，下次按该筛选拉取将从最早的未读重新开始`
+        : '✔ 增量游标已全部清零（含各分类/订阅源的单独游标），下次拉取将从最早的未读重新开始');
       return;
     }
-    if (sub !== 'status') { console.error('用法：x6o4 sync status|reset'); process.exitCode = 1; return; }
+    if (sub !== 'status') { console.error('用法：x6o4 sync status|reset [--category-id N | --feed-id N]'); process.exitCode = 1; return; }
     const c = config.readCursor(config.SYNC_STATE_PATH);
-    console.log(c > 0
-      ? `增量游标：${c}（只取编号比它大的未读文章；x6o4 sync reset 可清零重来）`
-      : '增量游标：未启用（还没有用 --sync 拉取过）');
+    const filters = Object.entries(config.readJson(config.SYNC_STATE_PATH, {}).filter_cursors || {});
+    if (c === 0 && filters.length === 0) {
+      console.log('增量游标：未启用（还没有用 --sync 拉取过）');
+      return;
+    }
+    if (c > 0) console.log(`增量游标（全部未读）：${c}（只取编号比它大的未读文章）`);
+    for (const [k, v] of filters) console.log(`增量游标（筛选 ${k}）：${v}`);
+    console.log('x6o4 sync reset 全部清零；x6o4 sync reset --category-id N（或 --feed-id N）只清某一个');
     return;
   }
 
@@ -420,7 +453,8 @@ function usage() {
   x6o4 entries [--status unread|read] [--starred] [--feed-id N] [--category-id N]
               [--limit N] [--offset N] [--order ...] [--direction ...] [--content full|none]
               [--min-reading-time N] [--fill N] [--sync] [--excerpt N] [--no-skip-state] [--print] --out 文件
-  x6o4 sync status|reset          增量拉取游标查看/清零（清零后从未读最早重新开始）
+  x6o4 sync status|reset [--category-id N | --feed-id N]
+                                 增量拉取游标查看/清零（清零后从未读最早重新开始；带筛选参数只清该筛选的游标）
   x6o4 mark-read --ids 9001,9002
   x6o4 build-epub --ids 9001,9002 --from entries.json [--title 书名] [--out 文件]
   x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]

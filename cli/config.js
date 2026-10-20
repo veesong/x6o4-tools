@@ -117,14 +117,35 @@ function writeJson(p, obj) {
 }
 
 // ---- 增量同步游标（未读拉取只取编号比游标大的文章）----
-// 读写函数接受路径参数，便于测试；调用方默认用 SYNC_STATE_PATH。
+// 状态文件里存两样：unread_cursor 是全局游标（拉全部未读时用）；
+// filter_cursors 是各筛选条件（分类/订阅源）自己的游标——按筛选拉取只
+// 推进自己的游标、不动全局的，这样全局游标不会越过其他分类里还没取过的
+// 未读文章。读写函数接受路径参数，便于测试；调用方默认用 SYNC_STATE_PATH。
 const SYNC_STATE_PATH = path.join(CONFIG_DIR, 'sync-state.json');
 
 function readCursor(p) {
   return Number(readJson(p, {}).unread_cursor) || 0;
 }
 function writeCursor(p, v) {
-  writeJson(p, { unread_cursor: Number(v) || 0, updated_at: new Date().toISOString() });
+  writeJson(p, { ...readJson(p, {}), unread_cursor: Number(v) || 0, updated_at: new Date().toISOString() });
+}
+
+function readFilterCursor(p, key) {
+  return Number((readJson(p, {}).filter_cursors || {})[key]) || 0;
+}
+function writeFilterCursor(p, key, v) {
+  const state = readJson(p, {});
+  const filters = { ...(state.filter_cursors || {}) };
+  filters[key] = Number(v) || 0;
+  writeJson(p, { ...state, filter_cursors: filters, updated_at: new Date().toISOString() });
+}
+// 清零：不带 key 清全部游标；带 key 只清那一个筛选的。
+function clearCursors(p, key) {
+  if (!key) { writeJson(p, {}); return; }
+  const state = readJson(p, {});
+  const filters = { ...(state.filter_cursors || {}) };
+  delete filters[key];
+  writeJson(p, { ...state, filter_cursors: filters, updated_at: new Date().toISOString() });
 }
 
 module.exports = {
@@ -132,4 +153,5 @@ module.exports = {
   OFFICIAL_BASE_URL,
   DEFAULTS, SMTP_PRESETS, applySmtpPreset, load, save, check, isLoopback,
   readJson, writeJson, readCursor, writeCursor,
+  readFilterCursor, writeFilterCursor, clearCursors,
 };

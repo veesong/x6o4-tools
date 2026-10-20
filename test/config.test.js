@@ -50,6 +50,41 @@ test('增量游标：缺省为零，写入后可读回，清零归位', () => {
   fs.rmSync(path.dirname(p), { recursive: true, force: true });
 });
 
+test('筛选游标：与全局游标各自独立，clearCursors 可只清一个或全清', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-cursor-'));
+  const p = path.join(dir, 'sync-state.json');
+
+  // 旧版本写的状态文件（没有 filter_cursors 字段）能继续读
+  fs.writeFileSync(p, JSON.stringify({ unread_cursor: 5, updated_at: '2026-01-01' }));
+  assert.strictEqual(config.readCursor(p), 5);
+  assert.strictEqual(config.readFilterCursor(p, 'category:5'), 0, '旧文件读筛选游标为零');
+
+  config.writeCursor(p, 100);
+  config.writeFilterCursor(p, 'category:5', 150);
+  assert.strictEqual(config.readCursor(p), 100, '写筛选游标不动全局');
+  assert.strictEqual(config.readFilterCursor(p, 'category:5'), 150);
+  assert.strictEqual(config.readFilterCursor(p, 'feed:9'), 0, '没记过的筛选为零');
+
+  config.writeCursor(p, 200); // 推进全局不清筛选游标
+  assert.strictEqual(config.readFilterCursor(p, 'category:5'), 150);
+  config.writeFilterCursor(p, 'feed:9', 90); // 推进一个筛选不动别的
+  assert.strictEqual(config.readCursor(p), 200);
+  assert.strictEqual(config.readFilterCursor(p, 'category:5'), 150);
+
+  config.clearCursors(p, 'category:5'); // 只清一个
+  assert.strictEqual(config.readFilterCursor(p, 'category:5'), 0);
+  assert.strictEqual(config.readFilterCursor(p, 'feed:9'), 90);
+  assert.strictEqual(config.readCursor(p), 200);
+
+  config.clearCursors(p); // 全清
+  assert.strictEqual(config.readCursor(p), 0);
+  assert.strictEqual(config.readFilterCursor(p, 'feed:9'), 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('SMTP 预设：常见邮箱参数填充', () => {
   const smtp = config.applySmtpPreset({ host: '', port: 0, secure: false, user: '', pass: '' }, 'qq');
   assert.deepStrictEqual({ host: smtp.host, port: smtp.port, secure: smtp.secure }, { host: 'smtp.qq.com', port: 465, secure: true });

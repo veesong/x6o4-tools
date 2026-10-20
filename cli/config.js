@@ -116,9 +116,20 @@ function writeJson(p, obj) {
   fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n', 'utf8');
 }
 
+// ---- 增量同步游标（未读拉取只取编号比游标大的文章）----
+// 读写函数接受路径参数，便于测试；调用方默认用 SYNC_STATE_PATH。
+const SYNC_STATE_PATH = path.join(CONFIG_DIR, 'sync-state.json');
+
+function readCursor(p) {
+  return Number(readJson(p, {}).unread_cursor) || 0;
+}
+function writeCursor(p, v) {
+  writeJson(p, { unread_cursor: Number(v) || 0, updated_at: new Date().toISOString() });
+}
+
 module.exports = {
-  CONFIG_DIR, CONFIG_PATH, EXPORT_STATE_PATH, SKIP_STATE_PATH,
+  CONFIG_DIR, CONFIG_PATH, EXPORT_STATE_PATH, SKIP_STATE_PATH, SYNC_STATE_PATH,
   OFFICIAL_BASE_URL,
   DEFAULTS, SMTP_PRESETS, applySmtpPreset, load, save, check, isLoopback,
-  readJson, writeJson,
+  readJson, writeJson, readCursor, writeCursor,
 };

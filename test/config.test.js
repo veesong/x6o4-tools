@@ -37,6 +37,19 @@ test('check：按用途要求字段', () => {
   assert.ok(!chk.ok && chk.missing.some((m) => m.startsWith('obsidian.vault_dir')));
 });
 
+test('增量游标：缺省为零，写入后可读回，清零归位', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-cursor-')), 'sync-state.json');
+  assert.strictEqual(config.readCursor(p), 0, '无状态文件时游标为零');
+  config.writeCursor(p, 12345);
+  assert.strictEqual(config.readCursor(p), 12345);
+  config.writeCursor(p, 0);
+  assert.strictEqual(config.readCursor(p), 0, '清零后归位');
+  fs.rmSync(path.dirname(p), { recursive: true, force: true });
+});
+
 test('SMTP 预设：常见邮箱参数填充', () => {
   const smtp = config.applySmtpPreset({ host: '', port: 0, secure: false, user: '', pass: '' }, 'qq');
   assert.deepStrictEqual({ host: smtp.host, port: smtp.port, secure: smtp.secure }, { host: 'smtp.qq.com', port: 465, secure: true });

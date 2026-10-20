@@ -202,10 +202,22 @@ async function main() {
 
   if (cmd === 'entries') {
     const { cfg, client } = api();
+    // --sync：增量模式。只取编号比本机游标大的文章，按编号升序（到达顺序），
+    // 与阅读 App 的增量同步同一套机制；游标仅在 --out 成功写入后推进——
+    // 中途中断的运行不推进，文章下次还会取到，不会悄悄漏掉。
+    const useSync = !!flags.sync;
+    if (useSync && (flags.order || flags.direction)) {
+      console.error('✘ --sync 自带按编号升序，请去掉 --order/--direction（两者不能同用）');
+      process.exitCode = 1;
+      return;
+    }
+    const cursor = useSync ? config.readCursor(config.SYNC_STATE_PATH) : 0;
     const params = {
       status: flags.status, starred: flags.starred ? 'true' : '',
       feed_id: flags['feed-id'], category_id: flags['category-id'],
-      order: flags.order, direction: flags.direction,
+      order: useSync ? 'id' : flags.order,
+      direction: useSync ? 'asc' : flags.direction,
+      after_entry_id: useSync && cursor > 0 ? cursor : undefined,
       limit: flags.limit || 50, offset: flags.offset,
       content: flags.content || 'full',
     };
@@ -218,9 +230,9 @@ async function main() {
       if (minRT > 0) r = r.filter((e) => (e.reading_time || 0) >= minRT);
       return r;
     };
-    // --fill N：按发布顺序逐页拉取（服务端每页上限 100），跳过记录与时长
-    // 过滤在客户端生效，凑够 N 条可推候选即停——避免大量短文占住窗口导致
-    // 永远取不到后面的长文。最多翻 50 页作为保护上限。
+    // --fill N：逐页拉取（服务端每页上限 100），跳过记录与时长过滤在客户端
+    // 生效，凑够 N 条可推候选即停——避免大量短文占住窗口导致永远取不到后面
+    // 的长文。最多翻 50 页作为保护上限。
     const fill = Number(flags.fill) || 0;
     let res;
     let rawAll = [];
@@ -248,6 +260,11 @@ async function main() {
     if (out) {
       fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
       fs.writeFileSync(out, JSON.stringify({ total, entries: rawAll }, null, 2));
+      if (useSync && rawAll.length) {
+        config.writeCursor(config.SYNC_STATE_PATH, Math.max(...rawAll.map((e) => Number(e.id) || 0)));
+      }
+    } else if (useSync) {
+      console.error('⚠ 未指定 --out，游标未推进（下次仍从同一位置取）');
     }
     if (flags.print) {
       const view = entries.map((e) => ({
@@ -257,13 +274,30 @@ async function main() {
         excerpt: excerptOf(e.content, excerptLen),
       }));
       const skippedByState = beforeSkip - rawAll.filter((e) => !skip[e.id]).length;
-      console.log(JSON.stringify({ total, fetched: rawAll.length, filtered: entries.length, skipped_by_state: skippedByState, entries: view }, null, 2));
+      const syncInfo = useSync ? { sync_cursor_before: cursor } : {};
+      console.log(JSON.stringify({ total, fetched: rawAll.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, entries: view }, null, 2));
       return;
     }
     console.log(`共 ${total} 条；本次取 ${rawAll.length} 条` +
       `${minRT ? `（时长≥${minRT}分钟后 ${entries.length} 条）` : ''}` +
       `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? rawAll.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
+      (useSync ? `；增量游标 ${cursor} → ${config.readCursor(config.SYNC_STATE_PATH)}` : '') +
       (out ? `；全文已写入 ${out}` : '（未指定 --out，正文未保存）'));
+    return;
+  }
+
+  if (cmd === 'sync') {
+    const sub = positional[0] || 'status';
+    if (sub === 'reset') {
+      config.writeCursor(config.SYNC_STATE_PATH, 0);
+      console.log('✔ 增量游标已清零，下次拉取将从最早的未读重新开始');
+      return;
+    }
+    if (sub !== 'status') { console.error('用法：x6o4 sync status|reset'); process.exitCode = 1; return; }
+    const c = config.readCursor(config.SYNC_STATE_PATH);
+    console.log(c > 0
+      ? `增量游标：${c}（只取编号比它大的未读文章；x6o4 sync reset 可清零重来）`
+      : '增量游标：未启用（还没有用 --sync 拉取过）');
     return;
   }
 
@@ -385,7 +419,8 @@ function usage() {
                                  保存单源阅读设置到服务端（App 与网页面板共用；需读写令牌）
   x6o4 entries [--status unread|read] [--starred] [--feed-id N] [--category-id N]
               [--limit N] [--offset N] [--order ...] [--direction ...] [--content full|none]
-              [--min-reading-time N] [--fill N] [--excerpt N] [--no-skip-state] [--print] --out 文件
+              [--min-reading-time N] [--fill N] [--sync] [--excerpt N] [--no-skip-state] [--print] --out 文件
+  x6o4 sync status|reset          增量拉取游标查看/清零（清零后从未读最早重新开始）
   x6o4 mark-read --ids 9001,9002
   x6o4 build-epub --ids 9001,9002 --from entries.json [--title 书名] [--out 文件]
   x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]

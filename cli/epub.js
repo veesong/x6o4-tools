@@ -78,7 +78,6 @@ function chapterXhtml(entry, bodyHtml) {
     entry.feed && entry.feed.title ? `来源：${entry.feed.title}` : '',
     entry.author ? `作者：${entry.author}` : '',
     entry.published_at ? `发布：${String(entry.published_at).slice(0, 10)}` : '',
-    `阅读约 ${entry.reading_time || '?'} 分钟`,
   ].filter(Boolean).join(' ｜ ');
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -238,17 +237,22 @@ async function buildEpub(entries, opts) {
   if (cur.length) volumes.push(cur);
 
   // 第三遍：逐册组装打包
-  // 默认文件名「RSS 阅读-yyyyMMdd-副标题」：副标题从本批文章里随机取一篇
-  // 标题，同一天多次生成也不易重名。
+  // 默认文件名「RSS 阅读-yyyyMMdd-副标题」：副标题随机取自该册文章的标题，
+  // 同一天多次生成、多册之间都不易重名。手动指定 out 时保持「前缀-册号」。
   const now = new Date();
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  const pickTitle = entries.length ? entries[Math.floor(Math.random() * entries.length)].title : '精选';
-  const out = String(opts.out || `RSS 阅读-${dateStr}-${sanitizeFilename(pickTitle)}`).replace(/\.epub$/i, '');
+  const outPrefix = opts.out ? String(opts.out).replace(/\.epub$/i, '') : '';
   const results = [];
   for (let v = 0; v < volumes.length; v++) {
     const vol = volumes[v];
     const bookTitle = volumeTitle(opts.title || 'x6o4 文章精选', v, volumes.length);
-    const file = volumes.length > 1 ? `${out}-${v + 1}.epub` : `${out}.epub`;
+    let file;
+    if (outPrefix) {
+      file = volumes.length > 1 ? `${outPrefix}-${v + 1}.epub` : `${outPrefix}.epub`;
+    } else {
+      const pickTitle = vol.length ? vol[Math.floor(Math.random() * vol.length)].entry.title : '精选';
+      file = `RSS 阅读-${dateStr}-${sanitizeFilename(pickTitle)}.epub`;
+    }
     const zip = new JSZip();
     zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' }); // 必须首条目且不压缩
     zip.file('META-INF/container.xml', containerXml());

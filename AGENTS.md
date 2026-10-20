@@ -2,7 +2,7 @@
 
 本仓库是 RSS Cloud 官方的开源工具仓库，面向 RSS Cloud 订阅用户；后端服务本身不在此仓库。
 
-- **运行时**：Node.js ≥ 18，CommonJS，无构建步骤。依赖保持五个：`jszip`、`sanitize-html`、`nodemailer`、`node-html-markdown`、`sharp`——新增依赖需在改动说明中给出理由，并保持小型、安装无需本地编译。
+- **运行时**：Node.js ≥ 18，CommonJS，无构建步骤。依赖保持六个：`jszip`、`sanitize-html`、`nodemailer`、`node-html-markdown`、`sharp`、`cross-spawn`——新增依赖需在改动说明中给出理由，并保持小型、安装无需本地编译。
 - **测试**：`npm test` 全绿再提交；测试不得依赖网络或真实账号（图片处理用本地生成图）。
 - **接口文档**：命令行的唯一说明在 `docs/cli.md`——改动命令、参数或输出时必须同步更新。
 - **用户文档**：README 面向完全不懂技术的读者——短句、一次一个动作、术语出现时立即用一句话解释。

@@ -10,7 +10,7 @@
 const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const spawn = require('cross-spawn');
 const JSZip = require('jszip');
 const nodemailer = require('nodemailer');
 
@@ -79,10 +79,22 @@ function agentlyArgs(group, { to, subject, body }) {
   return args;
 }
 
+// 直接执行命令名在 Windows 上启动不了 npm 全局安装的批处理（.cmd），交给
+// cross-spawn 处理跨平台启动，同时避免 shell 注入（参数含书名等用户内容）。
 function runAgently(args, cwd) {
   return new Promise((resolve) => {
-    execFile('agently-cli', args, { cwd, timeout: AGENTLY_TIMEOUT_MS, windowsHide: true }, (err, stdout, stderr) => {
-      resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    const child = spawn('agently-cli', args, { cwd, timeout: AGENTLY_TIMEOUT_MS, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', (err) => resolve({ err, stdout, stderr }));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve({ err: new Error(`退出码 ${code}`), stdout, stderr });
+      } else {
+        resolve({ err: null, stdout, stderr });
+      }
     });
   });
 }

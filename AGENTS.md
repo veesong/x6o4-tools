@@ -2,9 +2,10 @@
 
 本仓库是 RSS Cloud 官方的开源工具仓库，面向 RSS Cloud 订阅用户；后端服务本身不在此仓库。
 
-- **运行时**：Node.js ≥ 18，CommonJS，无构建步骤。依赖保持六个：`jszip`、`sanitize-html`、`nodemailer`、`node-html-markdown`、`sharp`、`cross-spawn`——新增依赖需在改动说明中给出理由，并保持小型、安装无需本地编译。
+- **运行时**：Node.js ≥ 18，CommonJS，无构建步骤。依赖保持八个：`jszip`、`sanitize-html`、`nodemailer`、`node-html-markdown`、`sharp`、`cross-spawn`、`@mozilla/readability`、`linkedom`（后两个为 0.3.0 全文拉取引入：正文提取算法与轻量网页解析，均纯 JavaScript 小型库）——新增依赖需在改动说明中给出理由，并保持小型、安装无需本地编译。
 - **测试**：`npm test` 全绿再提交；测试不得依赖网络或真实账号（图片处理用本地生成图）。
 - **接口文档**：命令行的唯一说明在 `docs/cli.md`——改动命令、参数或输出时必须同步更新。
+- **开源纪律**：本仓库面向 RSS Cloud 订阅用户公开。设计文档、内部机制、内部版本号、本机路径等一律不入本仓库（内部设计沉淀在闭源侧）；提交前按这些关键词自查新增内容。
 - **用户文档**：README 面向完全不懂技术的读者——短句、一次一个动作、术语出现时立即用一句话解释。
 - **服务地址**：RSS Cloud 官方地址固定为 `https://rss-cloud.x6o4.com`（`cli/config.js` 默认值），不要在仓库里引入其他环境地址；单元测试里验证「回环 http 豁免」逻辑的 `127.0.0.1` 夹具除外。
 - **凭据纪律**：令牌、邮箱授权码只存用户本机 `~/.x6o4-tools/`（权限 600）；任何情况下不写入仓库、不写日志、不打印到 AI 对话。

@@ -1,18 +1,19 @@
-// epub3 生成：清洗正文 → 图片处理管线（下载→按宽度缩放→灰度→
+// epub3 生成：清洗正文 → 图片处理管线（分级下载→按宽度缩放→灰度→
 // JPEG 重压缩，单张质量阶梯兜底）→ 组装 EPUB 3（mimetype 首条目且不压缩、题头页、
 // 目录、每篇一章）。分册：单册篇数上限或图片预算触顶即在篇边界开新册——
 // 用分册控制体积，不用跳图换体积（图片只有取不到才占位；极端单篇超大的情况
 // 由发送侧的 45MB zip / 50MB 拆信校验兜住并明确报错）。
+// 图片下载走 imagedl 分级重试（浏览器标识 + Referer 分级，见其模块头注释）。
 const fsp = require('fs/promises');
 const crypto = require('crypto');
 const JSZip = require('jszip');
 const sharp = require('sharp');
 const { cleanHtml } = require('./htmlclean');
+const { downloadImage } = require('./imagedl');
 const { sanitizeFilename } = require('./md');
 
 const MB = 1024 * 1024;
 const SINGLE_IMAGE_MAX = 3 * MB;     // 单张处理后仍超 3MB 时逐级降质量兜底
-const DOWNLOAD_TIMEOUT_MS = 30000;   // 单张下载超时（占位只用于取不到图，不用于体积控制）
 
 // ---- XML / XHTML 小工具 ----
 function escapeXml(s) {
@@ -44,15 +45,6 @@ async function processImageBuffer(buf, cfgEpub) {
     out = await run(quality);
   }
   return out;
-}
-
-async function downloadImage(url) {
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-    headers: { 'User-Agent': 'x6o4-tools/0.1 (+epub image fetch)' },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
 }
 
 // 顺序替换正文里的 <img src>：fn(url) 返回本地路径（images/NNNN.jpg）或
@@ -208,13 +200,15 @@ async function buildEpub(entries, opts) {
     const images = [];
     const bodyHtml = await replaceImages(html, async (url) => {
       try {
-        const raw = await downloadImage(url);
-        const processed = await processImageBuffer(raw, epubCfg);
+        // 分级下载：文章地址与配置来源由 imagedl 决定 Referer 序列
+        const raw = await downloadImage(url, entry.url, entry._imgReferer);
+        if (!raw) return null; // 四级都取不到 → 文字占位，不中断整本书
+        const processed = await processImageBuffer(raw.buffer, epubCfg);
         imgSeq += 1;
         images.push({ id: imgSeq, buf: processed });
         return `images/${pad4(imgSeq)}.jpg`;
       } catch {
-        return null; // 下载失败/超时/解码失败 → 文字占位，不中断整本书
+        return null; // 解码失败 → 文字占位，不中断整本书
       }
     });
     chapters.push({ entry, bodyHtml, images });
@@ -288,6 +282,6 @@ async function buildEpub(entries, opts) {
 }
 
 module.exports = {
-  buildEpub, processImageBuffer, downloadImage,
+  buildEpub, processImageBuffer,
   escapeXml, xhtmlSelfClose, volumeTitle, replaceImages,
 };

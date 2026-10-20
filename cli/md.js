@@ -1,14 +1,16 @@
 // 收藏转 Markdown：纯程序确定性转换（幂等、零成本、长文无截断），
 // 程序预处理（懒加载回填，与 epub 线共用）→ node-html-markdown（GFM）→ frontmatter
-// + 文件名净化 → 图片按配置下载并相对化。幂等：状态文件记录 来源链接 → 文件路径，
-// 状态缺失/文件丢失时扫描目标目录 frontmatter 重建。AI 润色为可选档（默认关，
-// 用户要求时由宿主 AI 直接编辑生成好的文件，不经本模块）。
+// + 文件名净化 → 图片按配置下载并相对化（下载走 imagedl 分级重试）。幂等：
+// 状态文件记录 来源链接 → 文件路径，状态缺失/文件丢失时扫描目标目录
+// frontmatter 重建。AI 润色为可选档（默认关，用户要求时由宿主 AI 直接编辑
+// 生成好的文件，不经本模块）。
 const fsp = require('fs/promises');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { NodeHtmlMarkdown, NodeHtmlMarkdownTransformer } = require('node-html-markdown');
 const { backfillLazyImages } = require('./htmlclean');
+const { downloadImage } = require('./imagedl');
 const config = require('./config');
 
 const nhm = new NodeHtmlMarkdown({}, {}, { codeBlockStyle: 'fenced' });
@@ -53,7 +55,8 @@ function hash8(s) {
 }
 
 // 下载图片到 assets 目录并把正文里的远程链接改写为相对路径（download_images 开关）。
-async function localizeImages(md, assetsDir, entryUrl) {
+// 下载走 imagedl 分级重试（文章地址作为 Referer 首选，全失败保留远程链接）。
+async function localizeImages(md, assetsDir, entryUrl, imgReferer) {
   const out = [];
   const re = /!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g;
   let last = 0;
@@ -63,21 +66,19 @@ async function localizeImages(md, assetsDir, entryUrl) {
     const alt = m[1];
     const url = m[2];
     out.push(md.slice(last, m.index));
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const buf = Buffer.from(await res.arrayBuffer());
+    const res = await downloadImage(url, entryUrl, imgReferer);
+    if (res) {
       let ext = 'jpg';
-      const ct = String(res.headers.get('content-type') || '');
+      const ct = res.contentType;
       if (ct.includes('png')) ext = 'png';
       else if (ct.includes('gif')) ext = 'gif';
       else if (ct.includes('webp')) ext = 'webp';
       seq += 1;
       const name = `${new Date().toISOString().slice(0, 10)}-${hash8(url)}-${seq}.${ext}`;
       await fsp.mkdir(assetsDir, { recursive: true });
-      await fsp.writeFile(path.join(assetsDir, name), buf);
+      await fsp.writeFile(path.join(assetsDir, name), res.buffer);
       out.push(`![${alt}](assets/${name})`);
-    } catch {
+    } else {
       out.push(`![${alt}](${url})`); // 下载失败保留远程链接
     }
     last = m.index + m[0].length;
@@ -110,8 +111,10 @@ function loadState(dir, statePath) {
 }
 
 // entries：[{id,title,url,author,content,published_at,feed}]（来自 entries 命令写出的全文 JSON）
+// opts.enrich：可选的单篇正文增强钩子（全文拉取，构建命令传入；在跳过判定
+// 之后调用，避免为不会导出的条目访问原文网页）。
 // 返回 { added: [{file,title}], skipped: n, failed: [{title,reason}] }
-async function exportMd(entries, cfg, { since } = {}) {
+async function exportMd(entries, cfg, { since, enrich } = {}) {
   const ob = cfg.obsidian || {};
   if (!ob.vault_dir) throw new Error('缺少 obsidian.vault_dir（笔记库目录）');
   const dir = path.join(ob.vault_dir, ob.subdir || 'RSS');
@@ -141,10 +144,11 @@ async function exportMd(entries, cfg, { since } = {}) {
       for (let i = 2; fs.existsSync(path.join(dir, file)); i++) {
         file = `${base}-${i}.md`;
       }
+      if (enrich) await enrich(entry); // 拉取原文全文（失败保留原正文，见 fulltext 模块）
       let body = nhm.translate(backfillLazyImages(entry.content || ''));
       body = body.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n'); // 换行统一 + 连续空行压缩
       if (ob.download_images !== false) {
-        body = await localizeImages(body, assetsDir, entry.url);
+        body = await localizeImages(body, assetsDir, entry.url, entry._imgReferer);
       }
       await fsp.writeFile(path.join(dir, file), `${frontmatter(entry, importedAt)}\n\n${body}\n`, 'utf8');
       state[entry.url] = file;

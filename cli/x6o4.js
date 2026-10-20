@@ -12,6 +12,7 @@ const { buildEpub } = require('./epub');
 const { sendKindle } = require('./send');
 const { installSkills } = require('./skills');
 const { exportMd } = require('./md');
+const { enrichEntries, newStats, fulltextLine } = require('./fulltext');
 
 const SKIP_TTL_DAYS = 30;
 
@@ -82,6 +83,26 @@ function loadSkipState() {
   return live;
 }
 
+// ---- 全文拉取装配：取按源阅读配置（取不到按无配置继续），供两条产物线共用 ----
+async function readingConfigMap(client) {
+  try {
+    const r = await client.feeds();
+    const map = {};
+    for (const f of r.feeds || []) {
+      if (f.reading_config) map[f.id] = f.reading_config;
+    }
+    return map;
+  } catch {
+    return {}; // 配置拉不到不阻断生成，按无配置走启发式
+  }
+}
+
+// export-md 的逐篇增强钩子：在导出跳过判定之后才访问原文网页，并汇总统计
+function enrichHook(cfgMap) {
+  const stats = newStats();
+  return { stats, enrich: async (entry) => { await enrichEntries([entry], cfgMap, { stats }); } };
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseArgs(rest);
@@ -137,11 +158,34 @@ async function main() {
 
   if (cmd === 'feeds') {
     const { client } = api();
+    const sub = positional[0];
+    if (sub === 'config') {
+      // 保存单源阅读设置（需读写档令牌；手机 App 与网页管理页共用同一份设置）
+      const id = Number(flags.id);
+      const toBool = (v) => (v === 'true' ? true : v === 'false' ? false : undefined);
+      const full = toBool(String(flags.full));
+      const referer = toBool(String(flags.referer));
+      if (!id || full === undefined || referer === undefined) {
+        console.error('用法：x6o4 feeds config --id N --full true|false --referer true|false [--referer-url 网址]');
+        process.exitCode = 1;
+        return;
+      }
+      const body = { full, referer };
+      if (flags['referer-url'] !== undefined && flags['referer-url'] !== true) {
+        body.referer_url = String(flags['referer-url']);
+      }
+      await client.putReadingConfig(id, body);
+      console.log(`✔ 已保存订阅源 ${id} 的阅读设置（拉取原文：${full ? '开' : '关'}；解除图片防盗链：${referer ? '开' : '关'}${body.referer_url ? `；来源网址 ${body.referer_url}` : ''}）`);
+      return;
+    }
     const { feeds, categories } = await client.feeds();
     console.log(`订阅源 ${feeds.length} 个 / 分类 ${categories.length} 个：`);
     for (const f of feeds) {
       const cat = f.category ? `[${f.category.title}]` : '[]';
-      console.log(`  ${f.id}\t${cat}\t未读 ${f.unread}\t${f.title}`);
+      const marks = [];
+      if (f.reading_config && f.reading_config.full) marks.push('全文');
+      if (f.reading_config && f.reading_config.referer) marks.push('防盗链');
+      console.log(`  ${f.id}\t${cat}\t未读 ${f.unread}\t${f.title}${marks.length ? `  [${marks.join(' ')}]` : ''}`);
     }
     return;
   }
@@ -212,10 +256,13 @@ async function main() {
       process.exitCode = 1;
       return;
     }
+    const ftStats = await enrichEntries(picked, await readingConfigMap(client));
     const results = await buildEpub(picked, { title: flags.title || 'x6o4 文章精选', out: flags.out, cfg });
     for (const r of results) {
       console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 → ${r.file}`);
     }
+    const ftLine = fulltextLine(ftStats);
+    if (ftLine) console.log(ftLine);
     return;
   }
 
@@ -229,13 +276,16 @@ async function main() {
   }
 
   if (cmd === 'export-md') {
-    const { cfg } = api();
+    const { cfg, client } = api();
     if (!flags.from) { console.error('用法：x6o4 export-md --from entries.json [--since 2026-01-01]'); process.exitCode = 1; return; }
     const data = JSON.parse(fs.readFileSync(flags.from, 'utf8'));
-    const r = await exportMd(data.entries || [], cfg, { since: flags.since });
+    const hook = enrichHook(await readingConfigMap(client));
+    const r = await exportMd(data.entries || [], cfg, { since: flags.since, enrich: hook.enrich });
     console.log(`✔ 新增 ${r.added.length} 篇，跳过 ${r.skipped.length} 篇（已导入/范围外）${r.failed.length ? `，失败 ${r.failed.length} 篇` : ''}`);
     for (const a of r.added) console.log(`  + ${a.file} ← ${a.title}`);
     for (const f of r.failed) console.log(`  ✘ ${f.title}：${f.reason}`);
+    const ftLine = fulltextLine(hook.stats);
+    if (ftLine) console.log(ftLine);
     return;
   }
 
@@ -292,7 +342,9 @@ function usage() {
   x6o4 login [--name 名] [--scope read|readwrite]              终端交互登录换长期令牌（密码不回显）
   x6o4 status                    账号/权益/未读/收藏概览（令牌只显前缀）
   x6o4 tokens list|revoke <编号>  查看与吊销个人令牌
-  x6o4 feeds                     订阅源与分类（含未读数）
+  x6o4 feeds                     订阅源与分类（含未读数；[全文]/[防盗链] 为已设置的阅读配置）
+  x6o4 feeds config --id N --full true|false --referer true|false [--referer-url 网址]
+                                 保存单源阅读设置到服务端（App 与网页面板共用；需读写令牌）
   x6o4 entries [--status unread|read] [--starred] [--feed-id N] [--category-id N]
               [--limit N] [--offset N] [--order ...] [--direction ...] [--content full|none]
               [--min-reading-time N] [--excerpt N] [--no-skip-state] [--print] --out 文件

@@ -4,42 +4,37 @@
 // 遇 409 令牌数上限时列出既有令牌引导吊销，腾出名额后重试一次（不静默吊销）。
 const os = require('os');
 const readline = require('readline');
+const { Writable } = require('stream');
 const { Api, ApiError } = require('./api');
 const config = require('./config');
 
-function question(rl, prompt) {
-  return new Promise((resolve) => rl.question(prompt, resolve));
+// 每次提问用独立的行读取实例，避免两个实例同时读键盘导致输入错乱。
+function question(prompt) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    rl.question(prompt, (answer) => { rl.close(); resolve(answer); });
+  });
 }
 
-// 密码输入：原生 readline 不支持掩码，按字符读取并以 * 回显（需真实终端）。
-function questionHidden(rl, prompt) {
+// 密码输入：行读取组件接管按键处理，但输出接到「哑输出流」——提示语照常
+// 显示，之后的按键回显全部丢弃，屏幕上什么都不出现（含退格擦除码）。
+function questionHidden(prompt) {
   return new Promise((resolve) => {
-    const stdin = process.stdin;
-    process.stdout.write(prompt);
-    let value = '';
-    const wasRaw = stdin.isRaw;
-    if (stdin.isTTY) stdin.setRawMode(true);
-    const onData = (ch) => {
-      ch = Buffer.from(ch);
-      if (ch[0] === 13 || ch[0] === 10) { // 回车
-        stdin.removeListener('data', onData);
-        if (stdin.isTTY) stdin.setRawMode(wasRaw);
-        process.stdout.write('\n');
-        resolve(value);
-      } else if (ch[0] === 3) { // Ctrl+C
-        process.stdout.write('\n');
-        process.exit(130);
-      } else if (ch[0] === 8 || ch[0] === 127) { // 退格
-        if (value.length) {
-          value = value.slice(0, -1);
-          process.stdout.write('\b \b');
-        }
-      } else if (ch[0] >= 32) {
-        value += ch.toString('utf8');
-        process.stdout.write('*');
-      }
-    };
-    stdin.on('data', onData);
+    const muted = new Writable({
+      write(chunk, enc, cb) {
+        if (!muted.muted) process.stdout.write(chunk, enc);
+        cb();
+      },
+    });
+    muted.muted = false;
+    const rl = readline.createInterface({ input: process.stdin, output: muted, terminal: true });
+    rl.on('SIGINT', () => { process.stdout.write('\n'); process.exit(130); });
+    rl.question(prompt, (answer) => {
+      rl.close();
+      process.stdout.write('\n');
+      resolve(answer);
+    });
+    muted.muted = true;
   });
 }
 
@@ -53,12 +48,10 @@ function printTokenTable(tokens) {
 }
 
 async function runLogin({ name, scope = 'readwrite' } = {}) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    // 服务地址固定为 RSS Cloud 官方（config.js 默认值），无需询问
-    const base = config.load().base_url;
-    const email = (await question(rl, '邮箱：')).trim();
-    const password = await questionHidden(rl, '密码（输入不回显）：');
+  // 服务地址固定为 RSS Cloud 官方（config.js 默认值），无需询问
+  const base = config.load().base_url;
+  const email = (await question('邮箱：')).trim();
+  const password = await questionHidden('密码（输入不回显）：');
 
     const api = new Api(base);
     let loginResp;
@@ -83,7 +76,7 @@ async function runLogin({ name, scope = 'readwrite' } = {}) {
           try {
             const { tokens } = await api.listTokens(jwt);
             printTokenTable(tokens);
-            const pick = (await question(rl, '输入要吊销的令牌编号（回车放弃登录）：')).trim();
+            const pick = (await question('输入要吊销的令牌编号（回车放弃登录）：')).trim();
             if (!pick) { console.error('✘ 已放弃：未吊销任何令牌。'); process.exitCode = 1; return; }
             await api.revokeToken(Number(pick)); // 个人令牌尚未持有，仍用登录令牌吊销
             continue;
@@ -117,9 +110,6 @@ async function runLogin({ name, scope = 'readwrite' } = {}) {
       console.error('✘ 令牌自校验失败（配置已保存，可重试 x6o4 status）：' + (e.friendly || e.message));
       process.exitCode = 1;
     }
-  } finally {
-    rl.close();
-  }
 }
 
 module.exports = { runLogin, question, questionHidden, printTokenTable };

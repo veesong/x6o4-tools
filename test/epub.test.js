@@ -100,3 +100,21 @@ test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-文章标�
   // 文件生成在当前工作目录，测试后清掉
   try { fs.rmSync(path.resolve(name), { force: true }); } catch { /* 已随目录删除 */ }
 });
+
+test('buildEpub：副标题确定性选取——同批重跑同名覆盖、多册不同名', async () => {
+  const mk = (i) => ({
+    id: i, title: `确定性标题${i}`, url: `https://e.example/${i}`, author: '作者',
+    published_at: '2026-10-18T00:00:00Z', reading_time: 5, feed: { title: '源' },
+    content: `<p>正文 ${i}。这是一段用于验证分册与命名的正文内容。</p>`,
+  });
+  const opts = { cfg: { epub: { max_articles_per_book: 2 } } };
+  const batch = [mk(1), mk(2), mk(3), mk(4)];
+  const r1 = await buildEpub(batch, opts);
+  assert.strictEqual(r1.length, 2);
+  assert.notStrictEqual(r1[0].file, r1[1].file, '两册的文件名应不同');
+  const r2 = await buildEpub(batch, opts);
+  assert.deepStrictEqual(r2.map((r) => r.file), r1.map((r) => r.file), '同一批文章两次生成应得到相同文件名');
+  for (const r of r1) {
+    try { fs.rmSync(path.resolve(r.file), { force: true }); } catch { /* 已不存在 */ }
+  }
+});

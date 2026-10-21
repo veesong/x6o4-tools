@@ -153,10 +153,12 @@ async function enrichEntries(entries, cfgMap = {}, { fetchImpl, stats } = {}) {
   return st;
 }
 
-// 统计行（无拉取动作时返回空串，不打印）；行尾列出「启发式成功且服务端无配置」
-// 的源，供技能或用户执行 feeds config 持久化。
+// 统计行（st 为空返回空串）；三项计数全 0 时输出「无需拉取」——让看输出的
+// 人能区分「没有需要拉取的」和「拉取环节没跑」。行尾列出「启发式成功且
+// 服务端无配置」的源，供技能或用户执行 feeds config 持久化。
 function fulltextLine(st) {
-  if (!st || st.configured + st.heuristic + st.failed === 0) return '';
+  if (!st) return '';
+  if (st.configured + st.heuristic + st.failed === 0) return 'ℹ 全文拉取：无需拉取（正文均已完整）';
   let line = `ℹ 全文拉取：配置成功 ${st.configured} 篇 / 启发式成功 ${st.heuristic} 篇 / 失败保留原文 ${st.failed} 篇`;
   if (st.failed && st.failedTitles.length) {
     const shown = st.failedTitles.slice(0, 3).join('、');

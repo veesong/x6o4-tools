@@ -125,8 +125,9 @@ test('enrichEntries：启发式拉取成功替换正文并记入 persistable；�
   assert.strictEqual(st4.persistable.length, 0, '有配置的源不进待持久化清单');
 });
 
-test('fulltextLine：无动作返回空串，有动作输出三类计数与可持久化源', () => {
-  assert.strictEqual(fulltextLine({ configured: 0, heuristic: 0, failed: 0, failedTitles: [], persistable: [] }), '');
+test('fulltextLine：无入参返回空串、无动作输出「无需拉取」、有动作输出三类计数与可持久化源', () => {
+  assert.strictEqual(fulltextLine(undefined), '');
+  assert.strictEqual(fulltextLine({ configured: 0, heuristic: 0, failed: 0, failedTitles: [], persistable: [] }), 'ℹ 全文拉取：无需拉取（正文均已完整）');
   const line = fulltextLine({ configured: 1, heuristic: 2, failed: 1, failedTitles: ['文A'], persistable: [] });
   assert.match(line, /配置成功 1 篇 \/ 启发式成功 2 篇 \/ 失败保留原文 1 篇/);
   assert.match(line, /文A/);

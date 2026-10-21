@@ -1,8 +1,12 @@
 // epub3 生成：清洗正文 → 图片处理管线（分级下载→按宽度缩放→灰度→
 // JPEG 重压缩，单张质量阶梯兜底）→ 组装 EPUB 3（mimetype 首条目且不压缩、题头页、
-// 目录、每篇一章）。分册：单册篇数上限或图片预算触顶即在篇边界开新册——
-// 用分册控制体积，不用跳图换体积（图片只有取不到才占位；极端单篇超大的情况
-// 由发送侧的 45MB zip / 50MB 拆信校验兜住并明确报错）。
+// 目录、每篇一章）。体积有两层控制：
+//   1）整封邮件上限（opts.maxMailBytes，未读推送传）：按「处理后图片字节 +
+//      正文 HTML 字节」保守估算，下一篇会触顶即在篇边界整体停止装篇（截断
+//      砍尾），未入选篇目由调用方保持未读；不传（0/负）= 不限制（收藏线）。
+//   2）单册分册：篇数上限或图片预算触顶即开新册——用分册控制单文件体积，
+//      不用跳图换体积（图片只有取不到才占位）。
+// 极端单篇超大的情况由发送侧的 45MB zip / 50MB 拆信校验兜住并明确报错。
 // 图片下载走 imagedl 分级重试（浏览器标识 + Referer 分级，见其模块头注释）。
 const fsp = require('fs/promises');
 const crypto = require('crypto');
@@ -185,12 +189,17 @@ function volumeTitle(base, idx, count) {
 
 // ---- 主体：构建一本或多册 ----
 // entries：[{id,title,url,author,content,published_at,reading_time,feed:{title}}]
-// opts：{ title, out（文件前缀，可省扩展名）, cfg（完整配置对象，读 cfg.epub） }
-// 返回 [{ file, title, count, images }]
+// opts：{ title, out（文件前缀，可省扩展名）, cfg（完整配置对象，读 cfg.epub）,
+//         maxMailBytes（整封邮件体积上限，字节；0/缺省 = 不限制） }
+// 返回 { volumes: [{ file, title, count, images, ids, size }],
+//        excluded: [{ id, title }]（因体积上限未入选，保持未读）,
+//        lastIncludedId }（入选序列末篇的条目 id；全被排除时为 null——首篇
+//        恒入选，只有空列表才会是 null）
 async function buildEpub(entries, opts) {
   const epubCfg = (opts.cfg && opts.cfg.epub) || {};
   const maxArticles = Number(epubCfg.max_articles_per_book) || 50;
   const budgetBytes = (Number(epubCfg.max_total_mb) || 20) * MB;
+  const maxMailBytes = Number(opts.maxMailBytes) || 0;
 
   // 第一遍：清洗正文并处理全部图片（全局编号，正文引用 images/NNNN.jpg）
   const chapters = []; // { entry, bodyHtml, images: [{id, buf}] }
@@ -214,11 +223,30 @@ async function buildEpub(entries, opts) {
     chapters.push({ entry, bodyHtml, images });
   }
 
-  // 第二遍：分册（篇边界判定——篇数上限或本册图片累计触顶即开新册）
+  // 第二遍之一：整封邮件上限（篇边界截断砍尾——估算值恒不小于实际打包
+  // 体积，宁少装不超限；首篇恒入选，保证截断不产生空书）
+  const included = [];
+  const excluded = [];
+  let usedBytes = 0;
+  for (let i = 0; i < chapters.length; i++) {
+    const ch = chapters[i];
+    const chBytes = ch.images.reduce((s, im) => s + im.buf.length, 0)
+      + Buffer.byteLength(ch.bodyHtml, 'utf8');
+    if (maxMailBytes > 0 && included.length > 0 && usedBytes + chBytes > maxMailBytes) {
+      for (let j = i; j < chapters.length; j++) {
+        excluded.push({ id: chapters[j].entry.id, title: chapters[j].entry.title });
+      }
+      break;
+    }
+    included.push(ch);
+    usedBytes += chBytes;
+  }
+
+  // 第二遍之二：分册（篇边界判定——篇数上限或本册图片累计触顶即开新册）
   const volumes = [];
   let cur = [];
   let curImages = 0;
-  for (const ch of chapters) {
+  for (const ch of included) {
     const chImgBytes = ch.images.reduce((s, im) => s + im.buf.length, 0);
     if (cur.length > 0 && (cur.length >= maxArticles || curImages + chImgBytes > budgetBytes)) {
       volumes.push(cur);
@@ -279,9 +307,13 @@ async function buildEpub(entries, opts) {
     });
     const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     await fsp.writeFile(file, buf);
-    results.push({ file, title: bookTitle, count: vol.length, images: imageIds.length });
+    results.push({
+      file, title: bookTitle, count: vol.length, images: imageIds.length,
+      ids: vol.map((c) => c.entry.id), size: buf.length,
+    });
   }
-  return results;
+  const lastIncludedId = included.length ? included[included.length - 1].entry.id : null;
+  return { volumes: results, excluded, lastIncludedId };
 }
 
 module.exports = {

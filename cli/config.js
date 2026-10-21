@@ -21,6 +21,9 @@ const DEFAULTS = {
   // 发信方式：smtp（默认，配授权码）或 agently（agent mail 产品的命令行工具，先 agently-cli auth login）
   mail_transport: 'smtp',
   smtp: { preset: '', host: '', port: 465, secure: true, user: '', pass: '' },
+  // 一封邮件附件总体积上限（MB）：未读推送生成电子书时按它截断装篇，默认 45
+  // 留在亚马逊/常见邮箱 50MB 硬限制之下。
+  mail: { max_attachment_mb: 45 },
   obsidian: { vault_dir: '', subdir: 'RSS', assets_subdir: 'RSS/assets', download_images: true },
   epub: {
     image_max_width: 1200,
@@ -29,7 +32,7 @@ const DEFAULTS = {
     max_total_mb: 20,
     max_articles_per_book: 50,
   },
-  unread: { max_articles_per_run: 20 },
+  unread: { max_articles_per_run: 30 },
 };
 
 // 常见邮箱 SMTP 预设：端口与开关位置可能调整，以各家官方文档为准。
@@ -52,7 +55,7 @@ function load() {
   if (fs.existsSync(CONFIG_PATH)) {
     const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
     cfg = { ...cfg, ...raw };
-    for (const k of ['smtp', 'obsidian', 'epub', 'unread']) {
+    for (const k of ['smtp', 'mail', 'obsidian', 'epub', 'unread']) {
       cfg[k] = { ...DEFAULTS[k], ...(raw[k] || {}) };
     }
   }

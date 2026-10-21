@@ -3,11 +3,27 @@ const test = require('node:test');
 const assert = require('node:assert');
 const config = require('../cli/config');
 
-test('默认值合并：缺省字段补齐', () => {
-  const cfg = config.load(); // 真实用户配置可能不存在，用 DEFAULTS 验证合并逻辑
-  assert.strictEqual(cfg.epub.image_max_width, 1200);
-  assert.strictEqual(cfg.epub.max_articles_per_book, 50);
-  assert.strictEqual(cfg.unread.max_articles_per_run, 20);
+test('默认值：凑篇目标 30、邮件体积上限 45、深合并组齐备', () => {
+  // 用 DEFAULTS 断言（真实用户配置可能覆盖具体数值，load() 不适合做默认值断言）
+  assert.strictEqual(config.DEFAULTS.unread.max_articles_per_run, 30);
+  assert.strictEqual(config.DEFAULTS.mail.max_attachment_mb, 45);
+  assert.strictEqual(config.DEFAULTS.epub.max_articles_per_book, 50);
+  assert.strictEqual(config.DEFAULTS.epub.image_max_width, 1200);
+  // 空白主目录下 load() 应得到完整默认值（mail 组深合并进结果）——
+  // 配置路径在模块加载时按主目录算出，须用子进程换 HOME 才能测
+  const { execFileSync } = require('child_process');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
+  const out = execFileSync(process.execPath, ['-e',
+    'const c = require(process.argv[1]);console.log(JSON.stringify(c.load()))',
+    path.join(__dirname, '..', 'cli', 'config.js')],
+    { encoding: 'utf8', env: { ...process.env, USERPROFILE: home, HOME: home } });
+  const cfg = JSON.parse(out);
+  assert.strictEqual(cfg.unread.max_articles_per_run, 30);
+  assert.strictEqual(cfg.mail.max_attachment_mb, 45);
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('check：服务地址默认固定为官方 https，http 非回环拒绝，回环豁免', () => {

@@ -25,6 +25,9 @@
     "max_articles_per_book": 50
   },
   "unread": {
-    "max_articles_per_run": 20
+    "max_articles_per_run": 30
+  },
+  "mail": {
+    "max_attachment_mb": 45
   }
 }

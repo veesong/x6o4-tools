@@ -15,6 +15,7 @@ const { exportMd } = require('./md');
 const { enrichEntries, newStats, fulltextLine } = require('./fulltext');
 
 const SKIP_TTL_DAYS = 30;
+const MB = 1024 * 1024;
 
 function parseArgs(argv) {
   const flags = {};
@@ -140,6 +141,14 @@ async function main() {
       console.log(config.CONFIG_PATH);
       return;
     }
+    if (sub === 'show') {
+      // 显示关键非敏感设置（不含令牌与授权码），供技能读取推送参数。
+      console.log(`未读推送：凑篇目标 ${cfg.unread.max_articles_per_run} 篇/次（配置 unread.max_articles_per_run）`);
+      console.log(`邮件附件体积上限：${(cfg.mail || {}).max_attachment_mb} MB（配置 mail.max_attachment_mb）`);
+      console.log(`电子书：单册图片预算 ${cfg.epub.max_total_mb} MB、单册篇数上限 ${cfg.epub.max_articles_per_book}`);
+      console.log(`发信方式：${cfg.mail_transport}${cfg.kindle_email ? `；Kindle 接收：${cfg.kindle_email}` : ''}`);
+      return;
+    }
     const chk = config.check(cfg, { needKindle: true, needObsidian: true });
     if (chk.base_url_invalid) console.log('✘ ' + chk.base_url_invalid);
     for (const m of chk.missing) console.log('✘ 缺少 ' + m);
@@ -256,7 +265,10 @@ async function main() {
     // --fill 模式下进度截止到最后一条候选在 rawAll 里的位置：候选之后的
     // 同页数据不算已处理，下次运行会重新取到，不会未经筛选就被游标跳过；
     // 候选为 0 时，取到的整批都被筛选条件排除，视为已处理。
+    // exhausted：--fill 模式下最后一页不足 100 条 = 未读池已取尽，供凑篇
+    // 循环判断"还有没有下一批可拉"。
     let considered;
+    let exhausted = false;
     if (fill > 0) {
       let offset = Number(flags.offset) || 0;
       for (let page = 0; page < 50; page++) {
@@ -264,7 +276,8 @@ async function main() {
         const batch = res.entries || [];
         rawAll.push(...batch);
         entries = applyFilters(rawAll);
-        if (entries.length >= fill || batch.length < 100) break;
+        if (batch.length < 100) { exhausted = true; break; }
+        if (entries.length >= fill) break;
         offset += batch.length;
       }
       rawAll = dedupEntries(rawAll);
@@ -300,7 +313,8 @@ async function main() {
       }));
       const skippedByState = beforeSkip - considered.filter((e) => !skip[e.id]).length;
       const syncInfo = useSync ? { sync_cursor_before: cursor, sync_scope: syncFilter || 'all' } : {};
-      console.log(JSON.stringify({ total, fetched: considered.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, entries: view }, null, 2));
+      const fillInfo = fill > 0 ? { exhausted } : {};
+      console.log(JSON.stringify({ total, fetched: considered.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, ...fillInfo, entries: view }, null, 2));
       return;
     }
     const cursorAfter = useSync
@@ -309,6 +323,7 @@ async function main() {
     console.log(`共 ${total} 条；本次取 ${considered.length} 条` +
       `${minRT ? `（时长≥${minRT}分钟后 ${entries.length} 条）` : ''}` +
       `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? considered.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
+      (fill > 0 && exhausted ? '；未读池已取尽' : '') +
       (useSync
         ? (syncFilter
           ? `；增量游标[${syncFilter}] ${filterCursor} → ${cursorAfter}（全局游标 ${globalCursor} 未动）`
@@ -329,7 +344,25 @@ async function main() {
         : '✔ 增量游标已全部清零（含各分类/订阅源的单独游标），下次拉取将从最早的未读重新开始');
       return;
     }
-    if (sub !== 'status') { console.error('用法：x6o4 sync status|reset [--category-id N | --feed-id N]'); process.exitCode = 1; return; }
+    if (sub === 'set') {
+      // 把游标摆到指定位置：未读技能在电子书生成成功后用它回拨到「实际
+      // 入选末篇」——没进书（配额外/体积外/没轮到评估）的条目落在游标
+      // 之后，下次 --sync 拉取自动再取。带筛选参数写该筛选自己的游标，
+      // 键换算与 entries 筛选拉取一致。
+      const id = Number(positional[1]);
+      if (!Number.isInteger(id) || id <= 0) {
+        console.error('用法：x6o4 sync set <条目id，正整数> [--category-id N | --feed-id N]');
+        process.exitCode = 1;
+        return;
+      }
+      if (filter) config.writeFilterCursor(config.SYNC_STATE_PATH, filter, id);
+      else config.writeCursor(config.SYNC_STATE_PATH, id);
+      console.log(filter
+        ? `✔ 已把筛选 ${filter} 的增量游标摆到 ${id}（比它大的未读下次还会取到）`
+        : `✔ 已把增量游标摆到 ${id}（比它大的未读下次还会取到）`);
+      return;
+    }
+    if (sub !== 'status') { console.error('用法：x6o4 sync status|set <id>|reset [--category-id N | --feed-id N]'); process.exitCode = 1; return; }
     const c = config.readCursor(config.SYNC_STATE_PATH);
     const filters = Object.entries(config.readJson(config.SYNC_STATE_PATH, {}).filter_cursors || {});
     if (c === 0 && filters.length === 0) {
@@ -338,7 +371,7 @@ async function main() {
     }
     if (c > 0) console.log(`增量游标（全部未读）：${c}（只取编号比它大的未读文章）`);
     for (const [k, v] of filters) console.log(`增量游标（筛选 ${k}）：${v}`);
-    console.log('x6o4 sync reset 全部清零；x6o4 sync reset --category-id N（或 --feed-id N）只清某一个');
+    console.log('x6o4 sync reset 全部清零；x6o4 sync reset --category-id N（或 --feed-id N）只清某一个；x6o4 sync set <id> 摆到指定位置');
     return;
   }
 
@@ -353,10 +386,17 @@ async function main() {
 
   if (cmd === 'build-epub') {
     const { cfg, client } = api();
-    if (!flags.ids || !flags.from) { console.error('用法：x6o4 build-epub --ids 9001,9002 --from entries.json --title 书名 --out 文件'); process.exitCode = 1; return; }
+    if (!flags.ids || !flags.from) { console.error('用法：x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N]'); process.exitCode = 1; return; }
     const want = String(flags.ids).split(',').map((s) => Number(s.trim())).filter(Boolean);
-    const data = JSON.parse(fs.readFileSync(flags.from, 'utf8'));
-    const byId = new Map((data.entries || []).map((e) => [e.id, e]));
+    // --from 支持逗号分隔多文件：凑篇循环每批一个文件，这里合并成条目池
+    // （重复 id 先到先得——正常批次之间天然不重复）。
+    const byId = new Map();
+    for (const f of String(flags.from).split(',').map((s) => s.trim()).filter(Boolean)) {
+      const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+      for (const e of data.entries || []) {
+        if (!byId.has(e.id)) byId.set(e.id, e);
+      }
+    }
     const picked = [];
     const missing = [];
     for (const id of want) {
@@ -368,11 +408,24 @@ async function main() {
       process.exitCode = 1;
       return;
     }
+    // --max-mail-mb：整封邮件附件体积上限（MB），0/负/不传 = 不限制；
+    // 缺省从配置读（mail.max_attachment_mb）。触顶时在篇边界截断砍尾。
+    const maxMailMb = flags['max-mail-mb'] !== undefined && String(flags['max-mail-mb']) !== 'true'
+      ? Number(flags['max-mail-mb'])
+      : Number((cfg.mail || {}).max_attachment_mb) || 0;
     const ftStats = await enrichEntries(picked, await readingConfigMap(client));
-    const results = await buildEpub(picked, { title: flags.title, out: flags.out, cfg });
-    for (const r of results) {
-      console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 → ${r.file}`);
+    const { volumes, excluded, lastIncludedId } = await buildEpub(picked, {
+      title: flags.title, out: flags.out, cfg,
+      maxMailBytes: maxMailMb > 0 ? maxMailMb * MB : 0,
+    });
+    for (const r of volumes) {
+      console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 / ${(r.size / MB).toFixed(1)}MB → ${r.file}（条目 ${r.ids.join(',')}）`);
     }
+    if (excluded.length) {
+      console.log(`因体积未入选 ${excluded.length} 篇（保持未读，下次自动再取）：`);
+      for (const e of excluded) console.log(`  - ${e.id} ${e.title}`);
+    }
+    if (lastIncludedId !== null) console.log(`最后入选条目 id：${lastIncludedId}`);
     const ftLine = fulltextLine(ftStats);
     if (ftLine) console.log(ftLine);
     return;
@@ -461,15 +514,18 @@ function usage() {
   x6o4 entries [--status unread|read] [--starred] [--feed-id N] [--category-id N]
               [--limit N] [--offset N] [--order ...] [--direction ...] [--content full|none]
               [--min-reading-time N] [--fill N] [--sync] [--excerpt N] [--no-skip-state] [--print] --out 文件
-  x6o4 sync status|reset [--category-id N | --feed-id N]
-                                 增量拉取游标查看/清零（清零后从未读最早重新开始；带筛选参数只清该筛选的游标）
+  x6o4 sync status|set <id>|reset [--category-id N | --feed-id N]
+                                 增量拉取游标查看/摆位/清零（set 把游标摆到指定条目——没处理到的未读下次还会取到；
+                                 清零后从未读最早重新开始；带筛选参数只作用于该筛选的游标）
   x6o4 mark-read --ids 9001,9002
-  x6o4 build-epub --ids 9001,9002 --from entries.json [--title 书名] [--out 文件]
+  x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N]
+                                 做成 epub（--from 可多个文件合并；--max-mail-mb 一封邮件附件总体积上限，
+                                 触顶在篇边界截断并输出未入选清单与最后入选条目 id；缺省读配置 mail.max_attachment_mb）
   x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]
   x6o4 export-md --from entries.json [--since 2026-01-01]
   x6o4 skip add --ids ... [--days 30] | list | clear
   x6o4 skills install           把三个 AI 技能链接到 ~/.agents/skills（各助手通用）
-  x6o4 config path|check`);
+  x6o4 config path|show|check   配置文件位置 / 关键设置（凑篇目标与体积上限） / 完整性检查`);
 }
 
 main().catch(fail);

@@ -51,10 +51,13 @@ test('buildEpub：结构（mimetype 首条且不压缩/清单/章节/引用一�
   });
   const cfg = { epub: { image_max_width: 1200, image_jpeg_quality: 70, image_grayscale: true, max_total_mb: 20, max_articles_per_book: 2 } };
   // 3 篇、单册上限 2 → 2 册
-  const results = await buildEpub([mk(1), mk(2), mk(3)], { title: '测试书', out: path.join(dir, 'book'), cfg });
+  const { volumes: results } = await buildEpub([mk(1), mk(2), mk(3)], { title: '测试书', out: path.join(dir, 'book'), cfg });
   assert.strictEqual(results.length, 2);
   assert.deepStrictEqual(results.map((r) => r.count), [2, 1]);
   assert.strictEqual(results[0].title, '测试书（一）');
+  assert.deepStrictEqual(results[0].ids, [1, 2], '每册应带条目 id 清单');
+  assert.deepStrictEqual(results[1].ids, [3]);
+  assert.ok(results[0].size > 0 && results[1].size > 0, '每册应带文件大小');
 
   const buf = fs.readFileSync(results[0].file);
   // 解析 zip 首条目本地文件头：必须是 mimetype 且压缩方式为 0（STORE，epub 规范）
@@ -89,7 +92,7 @@ test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-文章标�
     published_at: '2026-10-18T00:00:00Z', reading_time: 5, feed: { title: '源' },
     content: '<p>正文。</p>',
   };
-  const results = await buildEpub([entry], { cfg: { epub: {} } }); // 故意不传 out
+  const { volumes: results } = await buildEpub([entry], { cfg: { epub: {} } }); // 故意不传 out
   const now = new Date();
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
   const name = path.basename(results[0].file);
@@ -110,11 +113,60 @@ test('buildEpub：副标题确定性选取——同批重跑同名覆盖、多�
   const opts = { cfg: { epub: { max_articles_per_book: 2 } } };
   const batch = [mk(1), mk(2), mk(3), mk(4)];
   const r1 = await buildEpub(batch, opts);
-  assert.strictEqual(r1.length, 2);
-  assert.notStrictEqual(r1[0].file, r1[1].file, '两册的文件名应不同');
+  assert.strictEqual(r1.volumes.length, 2);
+  assert.notStrictEqual(r1.volumes[0].file, r1.volumes[1].file, '两册的文件名应不同');
   const r2 = await buildEpub(batch, opts);
-  assert.deepStrictEqual(r2.map((r) => r.file), r1.map((r) => r.file), '同一批文章两次生成应得到相同文件名');
-  for (const r of r1) {
+  assert.deepStrictEqual(r2.volumes.map((r) => r.file), r1.volumes.map((r) => r.file), '同一批文章两次生成应得到相同文件名');
+  for (const r of r1.volumes) {
     try { fs.rmSync(path.resolve(r.file), { force: true }); } catch { /* 已不存在 */ }
   }
+});
+
+test('buildEpub：整封邮件体积上限——下一篇触顶即整体停止装篇（截断砍尾）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-epub-'));
+  const small = (i) => ({
+    id: i, title: `短文${i}`, url: `https://e.example/${i}`, author: '', published_at: '', reading_time: 1,
+    feed: { title: '源' }, content: `<p>${'内容'.repeat(200)}</p>`, // ≈1.2KB
+  });
+  const big = (i) => ({
+    id: i, title: `长文${i}`, url: `https://e.example/${i}`, author: '', published_at: '', reading_time: 9,
+    feed: { title: '源' }, content: `<p>${'内容'.repeat(500)}</p>`, // ≈3KB
+  });
+  // 上限 4KB：第 1 篇（≈1.2KB）入选，第 2 篇（≈3KB）会触顶 → 2/3/4 全部未入选
+  const r = await buildEpub([small(1), big(2), big(3), big(4)], {
+    title: '截断书', out: path.join(dir, 'cut'), cfg: { epub: {} }, maxMailBytes: 4 * 1024,
+  });
+  assert.deepStrictEqual(r.volumes.map((v) => v.ids), [[1]], '只装得下第 1 篇');
+  assert.deepStrictEqual(r.excluded.map((e) => e.id), [2, 3, 4], '触顶后剩余篇目全部未入选');
+  assert.strictEqual(r.excluded[0].title, '长文2');
+  assert.strictEqual(r.lastIncludedId, 1);
+  // 入选体积不超上限（估算口径 = 图片 0 + 正文 HTML 字节）
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('buildEpub：体积上限宽裕时全量入选，未入选为空、末篇为最后一篇', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-epub-'));
+  const mk = (i) => ({
+    id: i, title: `全收${i}`, url: `https://e.example/${i}`, author: '', published_at: '', reading_time: 1,
+    feed: { title: '源' }, content: `<p>${'内容'.repeat(100)}</p>`,
+  });
+  const r = await buildEpub([mk(1), mk(2), mk(3), mk(4)], {
+    title: '全收书', out: path.join(dir, 'full'), cfg: { epub: {} }, maxMailBytes: 10 * 1024 * 1024,
+  });
+  assert.deepStrictEqual(r.excluded, []);
+  assert.deepStrictEqual(r.volumes.map((v) => v.ids), [[1, 2, 3, 4]]);
+  assert.strictEqual(r.lastIncludedId, 4);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('buildEpub：不传 maxMailBytes 不限制（收藏线零影响）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-epub-'));
+  const mk = (i) => ({
+    id: i, title: `不限${i}`, url: `https://e.example/${i}`, author: '', published_at: '', reading_time: 1,
+    feed: { title: '源' }, content: `<p>${'内容'.repeat(500)}</p>`,
+  });
+  const r = await buildEpub([mk(1), mk(2), mk(3)], { title: '不限书', out: path.join(dir, 'any'), cfg: { epub: {} } });
+  assert.deepStrictEqual(r.excluded, []);
+  assert.strictEqual(r.lastIncludedId, 3);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

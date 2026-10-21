@@ -199,7 +199,7 @@ async function main() {
     const { feeds, categories } = await client.feeds();
     console.log(`订阅源 ${feeds.length} 个 / 分类 ${categories.length} 个：`);
     for (const f of feeds) {
-      const cat = f.category ? `[${f.category.title}]` : '[]';
+      const cat = f.category ? `[#${f.category.id} ${f.category.title}]` : '[]';
       const marks = [];
       if (f.reading_config && f.reading_config.full) marks.push('全文');
       if (f.reading_config && f.reading_config.referer) marks.push('防盗链');
@@ -252,6 +252,11 @@ async function main() {
     let res;
     let rawAll = [];
     let entries;
+    // considered：本次纳入处理的条目范围（--out 与游标推进都以它为准）。
+    // --fill 模式下进度截止到最后一条候选在 rawAll 里的位置：候选之后的
+    // 同页数据不算已处理，下次运行会重新取到，不会未经筛选就被游标跳过；
+    // 候选为 0 时，取到的整批都被筛选条件排除，视为已处理。
+    let considered;
     if (fill > 0) {
       let offset = Number(flags.offset) || 0;
       for (let page = 0; page < 50; page++) {
@@ -264,19 +269,22 @@ async function main() {
       }
       rawAll = dedupEntries(rawAll);
       entries = applyFilters(rawAll).slice(0, fill);
+      const lastPos = entries.length ? rawAll.findIndex((e) => e.id === entries[entries.length - 1].id) : -1;
+      considered = lastPos >= 0 ? rawAll.slice(0, lastPos + 1) : rawAll;
     } else {
       res = await client.entries(params);
       rawAll = res.entries || [];
       entries = applyFilters(rawAll);
+      considered = rawAll;
     }
     const total = res.total;
-    const beforeSkip = rawAll.length;
+    const beforeSkip = considered.length;
     const out = flags.out;
     if (out) {
       fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-      fs.writeFileSync(out, JSON.stringify({ total, entries: rawAll }, null, 2));
-      if (useSync && rawAll.length) {
-        const maxId = Math.max(...rawAll.map((e) => Number(e.id) || 0));
+      fs.writeFileSync(out, JSON.stringify({ total, entries: considered }, null, 2));
+      if (useSync && considered.length) {
+        const maxId = Math.max(...considered.map((e) => Number(e.id) || 0));
         if (syncFilter) config.writeFilterCursor(config.SYNC_STATE_PATH, syncFilter, maxId);
         else config.writeCursor(config.SYNC_STATE_PATH, maxId);
       }
@@ -287,20 +295,20 @@ async function main() {
       const view = entries.map((e) => ({
         id: e.id, title: e.title, url: e.url, author: e.author,
         published_at: e.published_at, reading_time: e.reading_time, starred: e.starred,
-        feed: e.feed ? e.feed.title : '',
+        feed: e.feed ? { id: e.feed.id, title: e.feed.title } : null,
         excerpt: excerptOf(e.content, excerptLen),
       }));
-      const skippedByState = beforeSkip - rawAll.filter((e) => !skip[e.id]).length;
+      const skippedByState = beforeSkip - considered.filter((e) => !skip[e.id]).length;
       const syncInfo = useSync ? { sync_cursor_before: cursor, sync_scope: syncFilter || 'all' } : {};
-      console.log(JSON.stringify({ total, fetched: rawAll.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, entries: view }, null, 2));
+      console.log(JSON.stringify({ total, fetched: considered.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, entries: view }, null, 2));
       return;
     }
     const cursorAfter = useSync
       ? (syncFilter ? config.readFilterCursor(config.SYNC_STATE_PATH, syncFilter) : config.readCursor(config.SYNC_STATE_PATH))
       : 0;
-    console.log(`共 ${total} 条；本次取 ${rawAll.length} 条` +
+    console.log(`共 ${total} 条；本次取 ${considered.length} 条` +
       `${minRT ? `（时长≥${minRT}分钟后 ${entries.length} 条）` : ''}` +
-      `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? rawAll.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
+      `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? considered.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
       (useSync
         ? (syncFilter
           ? `；增量游标[${syncFilter}] ${filterCursor} → ${cursorAfter}（全局游标 ${globalCursor} 未动）`

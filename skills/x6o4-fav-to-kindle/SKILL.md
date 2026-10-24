@@ -35,3 +35,7 @@ description: 把 RSS Cloud 收藏（星标）文章生成 epub 电子书自动�
 ## 失败处理与铁律
 
 同「未读转 Kindle」技能：错误完整呈现；正文、令牌、授权码不进对话；Kindle 邮箱需国际区 @kindle.com 且发件地址已加亚马逊认可列表。配置 `mail_transport` 为 `agently` 时无授权码，发送问题按该技能「失败处理」里的 agently 条目处理。
+
+## 退出与收回授权
+
+用户说「退出 RSS Cloud」「收回授权」「切断权限」这类话时，运行 `x6o4 logout`：吊销本机令牌在服务端的授权并清除本地保存，把命令输出如实转述给用户。若提示未知命令（旧版本工具），先运行 `npm update -g x6o4-tools` 升级后重试。

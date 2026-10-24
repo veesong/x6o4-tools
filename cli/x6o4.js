@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// x6o4 命令行入口：login / status / tokens / feeds / entries /
+// x6o4 命令行入口：login / logout / status / tokens / feeds / entries /
 // mark-read / build-epub / send-kindle / export-md / skip / config。
 // 输出纪律：正文永不进终端（entries 默认写文件只打印摘要；--print 只输出元数据
 // 与摘要）；令牌与授权码永不回显（status 只显示令牌前缀）。
@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { Api, ApiError } = require('./api');
-const { runLogin, printTokenTable } = require('./login');
+const { runLogin, runLogout, printTokenTable } = require('./login');
 const { buildEpub } = require('./epub');
 const { sendKindle } = require('./send');
 const { installSkills } = require('./skills');
@@ -132,6 +132,10 @@ async function main() {
       name: flags.name,
       scope: flags.scope === 'read' ? 'read' : 'readwrite',
     });
+  }
+
+  if (cmd === 'logout') {
+    return runLogout();
   }
 
   if (cmd === 'config') {
@@ -506,6 +510,7 @@ function usage() {
 
 用法：
   x6o4 login [--name 名] [--scope read|readwrite]              终端交互登录换长期令牌（密码不回显）
+  x6o4 logout                    吊销本机令牌并清除本地保存（其他电脑上的令牌不受影响）
   x6o4 status                    账号/权益/未读/收藏概览（令牌只显前缀）
   x6o4 tokens list|revoke <编号>  查看与吊销个人令牌
   x6o4 feeds                     订阅源与分类（含未读数；[全文]/[防盗链] 为已设置的阅读配置）

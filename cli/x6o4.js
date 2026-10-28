@@ -17,6 +17,11 @@ const { enrichEntries, newStats, fulltextLine } = require('./fulltext');
 const SKIP_TTL_DAYS = 30;
 const MB = 1024 * 1024;
 
+// --from/--file/--ids 这类逗号列表参数允许重复传入并合并为同一个逗号分隔值。
+// Git Bash 会把单个路径参数自动转换成 Windows 路径，但是逗号分隔的整串不在
+// 转换范围内；重复传参让每个路径单独经过转换，工具因此不会收到未转换的路径。
+const LIST_FLAGS = new Set(['from', 'file', 'ids']);
+
 function parseArgs(argv) {
   const flags = {};
   const positional = [];
@@ -26,6 +31,7 @@ function parseArgs(argv) {
       const key = a.slice(2);
       const next = argv[i + 1];
       if (next === undefined || next.startsWith('--')) flags[key] = true;
+      else if (LIST_FLAGS.has(key) && typeof flags[key] === 'string') { flags[key] += `,${next}`; i++; }
       else { flags[key] = next; i++; }
     } else {
       positional.push(a);
@@ -524,9 +530,10 @@ function usage() {
                                  清零后从未读最早重新开始；带筛选参数只作用于该筛选的游标）
   x6o4 mark-read --ids 9001,9002
   x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N]
-                                 做成 epub（--from 可多个文件合并；--max-mail-mb 一封邮件附件总体积上限，
+                                 做成 epub（--from 可逗号分隔或重复传入多个文件；--max-mail-mb 一封邮件附件总体积上限，
                                  触顶在篇边界截断并输出未入选清单与最后入选条目 id；缺省读配置 mail.max_attachment_mb）
   x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]
+                                 多册时也可重复传 --file（Git Bash 下逗号分隔的路径列表不会被自动转换）
   x6o4 export-md --from entries.json [--since 2026-01-01]
   x6o4 skip add --ids ... [--days 30] | list | clear
   x6o4 skills install           把三个 AI 技能链接到 ~/.agents/skills（各助手通用）

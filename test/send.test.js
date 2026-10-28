@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { planGroups, agentlyArgs, sendKindle, findSentMessageId, deleteSentMessage } = require('../cli/send');
+const { planGroups, agentlyArgs, sendKindle, sendViaAgently, agentlyTimeoutMs, findSentMessageId, deleteSentMessage } = require('../cli/send');
 const config = require('../cli/config');
 
 test('check：agently 发信方式不要求 SMTP 配置', () => {
@@ -143,12 +143,122 @@ test('sendKindle：agently 方式未装命令行时错误里含安装指引', { 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// 本机已装 agently-cli 时跳过真实调用，避免测试发出邮件
+test('agentlyTimeoutMs：发送时限随附件体积增长并封顶', () => {
+  assert.strictEqual(agentlyTimeoutMs(0), 120000, '起步 2 分钟');
+  assert.strictEqual(agentlyTimeoutMs(19 * 1024 * 1024), 120000 + 19 * 30000, '19MB 起每 MB 追加 30 秒');
+  assert.strictEqual(agentlyTimeoutMs(1000 * 1024 * 1024), 15 * 60 * 1000, '最长 15 分钟');
+});
+
+// 构造单组一个附件的分组，供 sendViaAgently 的注入测试使用
+async function oneGroup() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-send-'));
+  const f = path.join(dir, 'a.epub');
+  fs.writeFileSync(f, 'x');
+  const groups = await planGroups([f]);
+  return { dir, groups };
+}
+
+test('sendViaAgently：发送命令异常但「已发送」命中 → 按成功处理并清理副本', async () => {
+  const { dir, groups } = await oneGroup();
+  const now = Date.now();
+  const calls = [];
+  const run = async (args) => {
+    const line = args.join(' ');
+    calls.push(line);
+    if (line.includes('+send')) {
+      // 模拟大附件上传超过时限：子进程被强制结束、退出码为空
+      return { err: new Error('超过 690 秒未完成，命令被强制结束'), stderr: '', stdout: '' };
+    }
+    if (line.includes('+list')) {
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { data: [
+        { message_id: 'msg_9', subject: '书', created_at: new Date(now - 1000).toISOString() },
+      ] } }) };
+    }
+    if ((line.includes('+trash') || line.includes('+delete')) && !line.includes('--confirmation-token')) {
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { confirmation_token: 'ctk_9' } }) };
+    }
+    return { err: null, stderr: '', stdout: JSON.stringify({ ok: true }) };
+  };
+  const r = await sendViaAgently(groups, { kindle_email: 'k@kindle.com' }, { subject: '书' }, { run, verifyAttempts: 2, verifyIntervalMs: 1 });
+  assert.strictEqual(r.emails, 1, '核对命中按成功计');
+  assert.deepStrictEqual(r.attachments, ['a.epub']);
+  assert.ok(r.warnings.some((w) => /按成功处理/.test(w)), '应有一行确认提醒');
+  assert.ok(r.warnings.every((w) => !/未清理/.test(w)), '副本应清理干净');
+  assert.strictEqual(calls.filter((l) => l.includes('+send')).length, 1, '未自动重发');
+  assert.ok(calls.some((l) => l.includes('+trash --id msg_9')), '确认命中后应清理副本');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('sendViaAgently：发送命令异常且「已发送」未命中 → 报失败并提示可安全重试', async () => {
+  const { dir, groups } = await oneGroup();
+  const run = async (args) => {
+    const line = args.join(' ');
+    if (line.includes('+send')) {
+      return { err: new Error('超过 690 秒未完成，命令被强制结束'), stderr: '', stdout: '' };
+    }
+    return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { data: [] } }) };
+  };
+  await assert.rejects(
+    () => sendViaAgently(groups, { kindle_email: 'k@kindle.com' }, { subject: '书' }, { run, verifyAttempts: 2, verifyIntervalMs: 1 }),
+    /可以安全重试/,
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('sendViaAgently：发送异常且列表查询失败 → 提示重发前先人工核对', async () => {
+  const { dir, groups } = await oneGroup();
+  const run = async (args) => {
+    const line = args.join(' ');
+    if (line.includes('+send')) {
+      return { err: new Error('超过 690 秒未完成，命令被强制结束'), stderr: '', stdout: '' };
+    }
+    return { err: new Error('退出码 1'), stderr: 'boom', stdout: '' };
+  };
+  await assert.rejects(
+    () => sendViaAgently(groups, { kindle_email: 'k@kindle.com' }, { subject: '书' }, { run, verifyAttempts: 2, verifyIntervalMs: 1 }),
+    /重发前请先在邮箱的「已发送」里确认/,
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('sendViaAgently：未安装/未登录类失败立即报错，不核对列表', async () => {
+  const { dir, groups } = await oneGroup();
+  let listCalls = 0;
+  const enoentRun = async (args) => {
+    if (args.join(' ').includes('+send')) {
+      const e = new Error('spawn agently-cli ENOENT');
+      e.code = 'ENOENT';
+      return { err: e, stderr: '', stdout: '' };
+    }
+    listCalls++;
+    return { err: null, stderr: '', stdout: '{}' };
+  };
+  await assert.rejects(
+    () => sendViaAgently(groups, { kindle_email: 'k@kindle.com' }, { subject: '书' }, { run: enoentRun }),
+    /npm install -g @tencent-qqmail\/agently-cli/,
+  );
+  assert.strictEqual(listCalls, 0, '未安装类失败不应核对列表');
+
+  const authRun = async (args) => {
+    if (args.join(' ').includes('+send')) {
+      return { err: new Error('退出码 1'), stderr: '尚未登录或登录已过期', stdout: '' };
+    }
+    listCalls++;
+    return { err: null, stderr: '', stdout: '{}' };
+  };
+  await assert.rejects(
+    () => sendViaAgently(groups, { kindle_email: 'k@kindle.com' }, { subject: '书' }, { run: authRun }),
+    /agently-cli auth login/,
+  );
+  assert.strictEqual(listCalls, 0, '未登录类失败不应核对列表');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// 本机已装 agently-cli 时跳过真实调用，避免测试发出邮件。探测必须用
+// cross-spawn：Windows 上 npm 全局命令是 .cmd 批处理，child_process 的
+// execFile 系列无法直接启动，会把「已安装」误判成「未安装」，该测试就会
+// 真实发送邮件。cross-spawn 与 cli/send.js 的发送走同一条启动路径。
 function cliAvailable() {
-  try {
-    require('child_process').execFileSync('agently-cli', ['--version'], { timeout: 10000, windowsHide: true });
-    return true;
-  } catch (e) {
-    return !/ENOENT/.test(String(e.message));
-  }
+  const r = require('cross-spawn').sync('agently-cli', ['--version'], { timeout: 10000, windowsHide: true });
+  return !(r.error && /ENOENT/i.test(String(r.error.code || r.error.message)));
 }

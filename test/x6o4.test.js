@@ -105,3 +105,31 @@ test('build-epub：多 --from 合并 + 体积截断输出未入选与末篇 id�
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+test('build-epub：--from 重复传参等价于逗号列表（离线）', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-build-'));
+  const env = { USERPROFILE: home, HOME: home };
+  // 回环不可达地址：feeds 配置拉取即刻失败按无配置继续，全程不发外网请求
+  fs.mkdirSync(path.join(home, '.x6o4-tools'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.x6o4-tools', 'config.json'), JSON.stringify({
+    base_url: 'http://127.0.0.1:1', token: 'xpat_test000000000000',
+  }));
+  // 正文足够长（≥1000 字）避免全文拉取发起网络请求
+  const mkEntry = (i) => ({
+    id: i, title: `文章${i}`, url: `https://e.example/${i}`, author: '', published_at: '',
+    reading_time: 5, feed: { id: 1, title: '源' }, content: `<p>${'正文'.repeat(120000)}</p>`,
+  });
+  fs.writeFileSync(path.join(work, 'a.json'), JSON.stringify({ total: 2, entries: [mkEntry(1), mkEntry(2)] }));
+  fs.writeFileSync(path.join(work, 'b.json'), JSON.stringify({ total: 2, entries: [mkEntry(3), mkEntry(4)] }));
+  const out = nodeCli([
+    'build-epub', '--ids', '1,3',
+    '--from', path.join(work, 'a.json'), '--from', path.join(work, 'b.json'),
+    '--title', '重复传参书', '--out', path.join(work, 'book'),
+  ], env);
+  assert.ok(out.includes('2 篇'), '两个批次的文章都应入选');
+  assert.ok(out.includes('（条目 1,3）'), '册行应含两个批次的条目编号');
+  assert.ok(fs.existsSync(path.join(work, 'book.epub')), '应生成 epub 文件');
+  fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(work, { recursive: true, force: true });
+});

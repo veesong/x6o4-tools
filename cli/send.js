@@ -4,9 +4,12 @@
 // 发信方式二选一（配置 mail_transport）：
 //  - smtp（默认）：nodemailer 直连发件邮箱服务器，需要授权码；
 //  - agently：调用本机 agently-cli 命令行（agent mail 产品的官方工具，
-//    先 `agently-cli auth login` 登录），不需要授权码。发送成功后自动
-//    永久删除「已发送」里的这封邮件（该邮箱总空间只有 1GB，附件副本
-//    会很快占满）；清理失败不影响推送，只在结果里提示。
+//    先 `agently-cli auth login` 登录），不需要授权码。发送时限按附件
+//    体积自适应（大附件上传可能远超固定时限）；发送命令异常退出时不立即
+//    判定失败，而是先核对「已发送」列表——确认实际已发出就按成功处理
+//    （避免重试造成重复推送），确认未发出才报失败。发送成功后自动永久
+//    删除「已发送」里的这封邮件（该邮箱总空间只有 1GB，附件副本会很快
+//    占满）；清理失败不影响推送，只在结果里提示。
 // 人工兜底：邮件失败或内容超大时，epub 已在本地，可改用亚马逊 Send to Kindle
 // 网页版上传（单个文档最大 200MB）或数据线拷贝。
 const fsp = require('fs/promises');
@@ -21,7 +24,15 @@ const ZIP_THRESHOLD = 45 * MB;  // 附件合计超过此值 → 打包 zip
 const MAIL_HARD_LIMIT = 50 * MB; // 亚马逊个人文档邮件每封附件总量上限
 const MAX_ATTACHMENTS = 25;      // 亚马逊单封邮件附件数上限
 const TIMEOUT_MS = 60000;
-const AGENTLY_TIMEOUT_MS = 120000;
+// agently-cli 发送附件的耗时随体积增长（19MB 附件实测超过 2 分钟仍未返回），
+// 因此发送时限按附件体积自适应：120 秒起步，每 MB 追加 30 秒，最长 15 分钟。
+// 列表查询、副本清理等小命令不传体积，按起步值计时。
+const AGENTLY_TIMEOUT_BASE_MS = 120000;
+const AGENTLY_TIMEOUT_MAX_MS = 15 * 60 * 1000;
+
+function agentlyTimeoutMs(bytes) {
+  return Math.min(AGENTLY_TIMEOUT_BASE_MS + 30 * 1000 * Math.ceil(bytes / MB), AGENTLY_TIMEOUT_MAX_MS);
+}
 
 // 把待发文件整理成「每封邮件一组」的结构：必要时打包 zip，再按体积与数量分组。
 // 返回 [{ dir, files: [{ abs, rel, size }], bytes }]——dir 是附件所在目录，
@@ -83,20 +94,24 @@ function agentlyArgs(group, { to, subject, body }) {
 
 // 直接执行命令名在 Windows 上启动不了 npm 全局安装的批处理（.cmd），交给
 // cross-spawn 处理跨平台启动，同时避免 shell 注入（参数含书名等用户内容）。
-function runAgently(args, cwd) {
+// 到达 timeoutMs 时子进程被强制结束，此时 close 事件的退出码为 null；报错
+// 文字因此区分「超时被强制结束」与普通的非零退出码。但是强制结束并不代表
+// 邮件没有发出——大附件上传超时的实测表现是邮件已在服务端完成投递，因此
+// 调用方在报失败前必须先核对「已发送」列表。
+function runAgently(args, cwd, timeoutMs = AGENTLY_TIMEOUT_BASE_MS) {
   return new Promise((resolve) => {
-    const child = spawn('agently-cli', args, { cwd, timeout: AGENTLY_TIMEOUT_MS, windowsHide: true });
+    const child = spawn('agently-cli', args, { cwd, timeout: timeoutMs, windowsHide: true });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('error', (err) => resolve({ err, stdout, stderr }));
     child.on('close', (code) => {
-      if (code !== 0) {
-        resolve({ err: new Error(`退出码 ${code}`), stdout, stderr });
-      } else {
-        resolve({ err: null, stdout, stderr });
-      }
+      if (code === 0) return resolve({ err: null, stdout, stderr });
+      const reason = code === null
+        ? `超过 ${Math.round(timeoutMs / 1000)} 秒未完成，命令被强制结束`
+        : `退出码 ${code}`;
+      resolve({ err: new Error(reason), stdout, stderr });
     });
   });
 }
@@ -138,13 +153,16 @@ async function runAgentlyConfirmed(run, args, cwd) {
   return run([...args, '--confirmation-token', token], cwd);
 }
 
-// 删除「已发送」里刚发出的这封邮件。成功返回空值，失败返回提醒文字
-// （不抛错：清理是收尾动作，不应让已成功的推送整体报错）。
-async function deleteSentMessage(run, cwd, subject, sinceMs) {
+// 在「已发送」列表里查找主题匹配的邮件；刚发出的邮件可能要等几秒才出现在
+// 列表里，因此按 attempts 次重试、每次间隔 intervalMs。返回命中的邮件 id
+// 与列表查询失败原因（未命中时 id 为空）。发送后的副本清理与发送异常后的
+// 核对都使用它，区别只在重试次数与间隔：异常核对要等待更久，因为命令被
+// 强制结束到邮件出现在列表之间可能有几十秒延迟。
+async function findSentId(run, cwd, subject, sinceMs, { attempts = 2, intervalMs = 3000 } = {}) {
   let id = null;
   let listErr = '';
-  for (let attempt = 0; attempt < 2 && !id; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, 3000)); // 刚发出的邮件可能要等几秒才出现在列表里
+  for (let attempt = 0; attempt < attempts && !id; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, intervalMs));
     const lr = await run(['message', '+list', '--dir', 'sent', '--limit', '10'], cwd);
     if (lr.err) {
       listErr = String(lr.stderr || lr.err.message || '').trim().slice(0, 200);
@@ -152,11 +170,12 @@ async function deleteSentMessage(run, cwd, subject, sinceMs) {
     }
     id = findSentMessageId(lr.stdout, subject, sinceMs);
   }
-  if (!id) {
-    return listErr
-      ? `查询「已发送」列表失败（${listErr}），这封邮件的副本未清理`
-      : `「已发送」里没找到主题为「${subject}」的邮件，副本未清理`;
-  }
+  return { id, listErr };
+}
+
+// 对已命中的邮件执行两步确认的移入已删除与彻底清除。成功返回空值，失败
+// 返回提醒文字（不抛错：清理是收尾动作，不应让已成功的推送整体报错）。
+async function removeSentById(run, cwd, id) {
   const trash = await runAgentlyConfirmed(run, ['message', '+trash', '--id', id], cwd);
   if (trash.err) return `邮件 ${id} 移入已删除失败，副本未清理`;
   const del = await runAgentlyConfirmed(run, ['message', '+delete', '--id', id], cwd);
@@ -164,7 +183,25 @@ async function deleteSentMessage(run, cwd, subject, sinceMs) {
   return null;
 }
 
-async function sendViaAgently(groups, cfg, { subject }) {
+// 删除「已发送」里刚发出的这封邮件。成功返回空值，失败返回提醒文字。
+async function deleteSentMessage(run, cwd, subject, sinceMs) {
+  const { id, listErr } = await findSentId(run, cwd, subject, sinceMs);
+  if (!id) {
+    return listErr
+      ? `查询「已发送」列表失败（${listErr}），这封邮件的副本未清理`
+      : `「已发送」里没找到主题为「${subject}」的邮件，副本未清理`;
+  }
+  return removeSentById(run, cwd, id);
+}
+
+// deps 供测试注入假的命令执行器；verifyAttempts/verifyIntervalMs 控制发送
+// 异常后核对「已发送」列表的重试次数与间隔。
+async function sendViaAgently(groups, cfg, { subject } = {}, deps = {}) {
+  const run = deps.run || ((args, cwd, timeoutMs) => runAgently(args, cwd, timeoutMs));
+  const verifyPatience = {
+    attempts: deps.verifyAttempts || 4,
+    intervalMs: deps.verifyIntervalMs || 10000,
+  };
   const sent = [];
   const warnings = [];
   for (let i = 0; i < groups.length; i++) {
@@ -172,18 +209,36 @@ async function sendViaAgently(groups, cfg, { subject }) {
     const subj = groups.length > 1 ? `${subject}（${i + 1}/${groups.length}）` : subject;
     const body = `x6o4-tools 推送：${g.files.length} 个附件（epub 电子书）。`;
     const sinceMs = Date.now(); // 发信前的时间戳，用来从「已发送」里认出这封邮件
-    const r = await runAgently(agentlyArgs(g, { to: cfg.kindle_email, subject: subj, body }), g.dir);
+    const r = await run(agentlyArgs(g, { to: cfg.kindle_email, subject: subj, body }), g.dir, agentlyTimeoutMs(g.bytes));
     if (r.err) {
-      const hint = /ENOENT/i.test(String(r.err.message))
+      const fullText = `${r.stderr || ''}\n${r.err.message}`;
+      // 未安装（命令没有执行起来）与未登录/令牌失效（被服务端直接拒绝）
+      // 都发生在邮件提交给服务端之前，不会产生已发出的邮件，核对列表没有
+      // 意义；其余失败（超时被强制结束、异常退出码）先核对再定性。
+      const hint = /ENOENT/i.test(fullText)
         ? '未找到 agently-cli 命令，请先安装：npm install -g @tencent-qqmail/agently-cli'
-        : (/登录|auth|token|401/i.test(r.stderr + r.err.message)
+        : (/登录|auth|token|401/i.test(fullText)
           ? 'agently-cli 尚未登录或登录已过期，请先在终端运行 agently-cli auth login'
           : '');
-      throw new Error(`agently-cli 发送失败（${(r.stderr || r.err.message).trim().slice(0, 500)}）。${hint}` +
+      const check = hint ? null : await findSentId(run, g.dir, subj, sinceMs, verifyPatience);
+      if (check && check.id) {
+        // 命令异常但邮件实际已发出：按成功处理并照常清理副本，不重发。
+        warnings.push(`发送命令异常（${fullText.trim().slice(0, 200)}），但已在「已发送」列表确认邮件实际发出，按成功处理；未重发，避免重复推送`);
+        const warn = await removeSentById(run, g.dir, check.id);
+        if (warn) warnings.push(warn);
+        sent.push(...g.files.map((a) => a.name));
+        continue;
+      }
+      const checked = check
+        ? (check.listErr
+          ? `无法核对「已发送」列表（${check.listErr}）；重发前请先在邮箱的「已发送」里确认没有这封邮件，以免重复推送`
+          : '已核对「已发送」列表未发现这封邮件，可以安全重试')
+        : '这类失败发生在邮件提交之前，不会产生已发出的邮件';
+      throw new Error(`agently-cli 发送失败（${fullText.trim().slice(0, 500)}）。${checked}。${hint}` +
         '人工兜底：亚马逊 Send to Kindle 网页版上传（单个文档最大 200MB）或数据线拷贝，epub 文件已在本地');
     }
     sent.push(...g.files.map((a) => a.name));
-    const warn = await deleteSentMessage((a, c) => runAgently(a, c), g.dir, subj, sinceMs);
+    const warn = await deleteSentMessage(run, g.dir, subj, sinceMs);
     if (warn) warnings.push(warn);
   }
   return { emails: groups.length, attachments: sent, warnings };
@@ -259,4 +314,4 @@ async function sendKindle(files, cfg, { subject } = {}) {
   }
 }
 
-module.exports = { sendKindle, planGroups, agentlyArgs, findSentMessageId, deleteSentMessage };
+module.exports = { sendKindle, sendViaAgently, planGroups, agentlyArgs, agentlyTimeoutMs, findSentMessageId, deleteSentMessage };

@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const JSZip = require('jszip');
 const sharp = require('sharp');
-const { buildEpub, processImageBuffer, escapeXml, xhtmlSelfClose, volumeTitle, replaceImages } = require('../cli/epub');
+const { buildEpub, processImageBuffer, escapeXml, xhtmlSelfClose, volumeTitle, defaultSubtitle, replaceImages } = require('../cli/epub');
 
 test('escapeXml：裸 & 转义，既有实体保留', () => {
   assert.strictEqual(escapeXml('a & b &amp; c &#65; &#x41;'), 'a &amp; b &amp; c &#65; &#x41;');
@@ -21,6 +21,18 @@ test('volumeTitle：单册无后缀，多册加（一）（二）', () => {
   assert.strictEqual(volumeTitle('书', 0, 1), '书');
   assert.strictEqual(volumeTitle('书', 0, 2), '书（一）');
   assert.strictEqual(volumeTitle('书', 1, 2), '书（二）');
+});
+
+test('defaultSubtitle：首篇标题 + 等N篇，过长截断并去掉截断处标点', () => {
+  const mk = (title) => ({ title });
+  assert.strictEqual(defaultSubtitle([]), '精选');
+  assert.strictEqual(defaultSubtitle([mk('单篇标题')]), '单篇标题', '只有一篇时不加「等N篇」');
+  assert.strictEqual(defaultSubtitle([mk('首篇'), mk('次篇'), mk('末篇')]), '首篇 等3篇');
+  const long = '全面电动化的任务依然很艰巨，动力多元化仍然是全球汽车市场的发展趋势'; // 33 字
+  assert.strictEqual(defaultSubtitle([mk(long), mk('b')]), '全面电动化的任务依然很艰巨，动力多元化仍然是全球… 等2篇', '24 字后截断并加省略号');
+  const punct = '一二三四五六七八九十一二三四五六七八九十一二三，后面还有很多字';
+  assert.strictEqual(defaultSubtitle([mk(punct), mk('b')]), '一二三四五六七八九十一二三四五六七八九十一二三… 等2篇', '截断处的标点去掉');
+  assert.strictEqual(defaultSubtitle([mk('a/b:c?d'), mk('b')]), 'a b c d 等2篇', '文件名非法字符按净化规则处理');
 });
 
 test('图片管线：按宽度缩放、灰度、JPEG 输出且体积显著缩小', async () => {
@@ -85,7 +97,7 @@ test('buildEpub：结构（mimetype 首条且不压缩/清单/章节/引用一�
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-文章标题', async () => {
+test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-首篇标题（单篇不加等N篇）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-epub-'));
   const entry = {
     id: 1, title: '某篇很精彩的文章', url: 'https://e.example/1', author: '作者',
@@ -96,15 +108,14 @@ test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-文章标�
   const now = new Date();
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
   const name = path.basename(results[0].file);
-  assert.match(name, new RegExp(`^RSS 阅读-${dateStr}-.+\\.epub$`));
-  assert.ok(name.includes('某篇很精彩的文章'));
+  assert.strictEqual(name, `RSS 阅读-${dateStr}-某篇很精彩的文章.epub`);
   assert.strictEqual(results[0].title, name.replace(/\.epub$/, ''), '书内书名与文件名一致');
   fs.rmSync(dir, { recursive: true, force: true });
   // 文件生成在当前工作目录，测试后清掉
   try { fs.rmSync(path.resolve(name), { force: true }); } catch { /* 已随目录删除 */ }
 });
 
-test('buildEpub：副标题确定性选取——同批重跑同名覆盖、多册不同名', async () => {
+test('buildEpub：默认书名首篇标题 等N篇——同批重跑同名覆盖、多册带（一）（二）', async () => {
   const mk = (i) => ({
     id: i, title: `确定性标题${i}`, url: `https://e.example/${i}`, author: '作者',
     published_at: '2026-10-18T00:00:00Z', reading_time: 5, feed: { title: '源' },
@@ -114,7 +125,11 @@ test('buildEpub：副标题确定性选取——同批重跑同名覆盖、多�
   const batch = [mk(1), mk(2), mk(3), mk(4)];
   const r1 = await buildEpub(batch, opts);
   assert.strictEqual(r1.volumes.length, 2);
-  assert.notStrictEqual(r1.volumes[0].file, r1.volumes[1].file, '两册的文件名应不同');
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  assert.strictEqual(path.basename(r1.volumes[0].file), `RSS 阅读-${dateStr}-确定性标题1 等2篇（一）.epub`, '第一册：本册首篇 + 本册篇数 + 册号');
+  assert.strictEqual(path.basename(r1.volumes[1].file), `RSS 阅读-${dateStr}-确定性标题3 等2篇（二）.epub`, '第二册：首篇换成本册第一篇');
+  assert.strictEqual(r1.volumes[0].title, path.basename(r1.volumes[0].file).replace(/\.epub$/, ''), '书内书名与文件名一致');
   const r2 = await buildEpub(batch, opts);
   assert.deepStrictEqual(r2.volumes.map((r) => r.file), r1.volumes.map((r) => r.file), '同一批文章两次生成应得到相同文件名');
   for (const r of r1.volumes) {

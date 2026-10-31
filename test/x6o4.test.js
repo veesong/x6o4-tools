@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { poolBoundNotice, cursorValuesText } = require('../cli/x6o4');
 
 function nodeCli(args, env = {}) {
   return execFileSync(process.execPath, [path.join(__dirname, '..', 'cli', 'x6o4.js'), ...args], {
@@ -12,6 +13,26 @@ function nodeCli(args, env = {}) {
     env: { ...process.env, ...env },
   });
 }
+
+test('poolBoundNotice：筛选游标低于全局游标才提示，且写明截断边界与恢复办法', () => {
+  assert.strictEqual(poolBoundNotice('', 0, 11847), '', '不带筛选的拉取没有这个提示');
+  assert.strictEqual(poolBoundNotice('category:2', 12810, 11847), '', '筛选游标已越过全局游标时不提示');
+  assert.strictEqual(poolBoundNotice('category:2', 11847, 11847), '', '两者相等时不提示');
+  const msg = poolBoundNotice('category:2', 0, 11847);
+  assert.ok(msg.includes('category:2'), '应点名筛选键');
+  assert.ok(msg.includes('编号 ≤ 11847'), '应写明被截在池外的编号边界');
+  assert.ok(msg.includes('x6o4 sync reset'), '应给出重筛办法');
+});
+
+test('cursorValuesText：列出全局与各筛选游标的原值，零值不列', () => {
+  assert.strictEqual(cursorValuesText({}), '');
+  assert.strictEqual(cursorValuesText({ unread_cursor: 11847 }), '全局 11847');
+  assert.strictEqual(cursorValuesText({ unread_cursor: 0, filter_cursors: { 'category:2': 12810, 'feed:9': 0 } }), '筛选 category:2=12810');
+  assert.strictEqual(
+    cursorValuesText({ unread_cursor: 11847, filter_cursors: { 'category:2': 12810, 'category:12': 15716 } }),
+    '全局 11847；筛选 category:2=12810、category:12=15716',
+  );
+});
 
 test('help 输出包含全部子命令', () => {
   const out = nodeCli(['help']);
@@ -59,6 +80,32 @@ test('sync set：全局与筛选游标摆位、非法值报错（离线）', () 
   threw = null;
   try { nodeCli(['sync', 'set', '-3'], env); } catch (e) { threw = e; }
   assert.ok(threw, '非正整数应非零退出');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('sync reset：全清列出原值并清空；只清筛选时保留全局并说明起点（离线）', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
+  const env = { USERPROFILE: home, HOME: home };
+
+  nodeCli(['sync', 'set', '11847'], env);
+  nodeCli(['sync', 'set', '12810', '--category-id', '2'], env);
+  nodeCli(['sync', 'set', '15716', '--category-id', '12'], env);
+  let out = nodeCli(['sync', 'reset', '--category-id', '2'], env);
+  assert.ok(out.includes('原值 12810'), '只清筛选时应列出该筛选原值');
+  assert.ok(out.includes('全局游标 11847 之后'), '全局游标仍在时应说明起点仍受它约束');
+  out = nodeCli(['sync', 'status'], env);
+  assert.ok(out.includes('增量游标（全部未读）：11847'), '只清筛选不动全局');
+  assert.ok(!out.includes('category:2）'), '被清的筛选游标不再显示');
+  assert.ok(out.includes('增量游标（筛选 category:12）：15716'), '其他筛选游标不受影响');
+
+  out = nodeCli(['sync', 'reset'], env);
+  assert.ok(out.includes('原值：全局 11847；筛选 category:12=15716'), '全清应列出全部原值');
+  out = nodeCli(['sync', 'status'], env);
+  assert.ok(out.includes('未启用'), '全清后所有游标都应消失');
+
+  nodeCli(['sync', 'set', '700', '--category-id', '3'], env);
+  out = nodeCli(['sync', 'reset', '--category-id', '3'], env);
+  assert.ok(out.includes('从最早的未读重新开始'), '没有全局游标时只清筛选即回到最早的未读');
   fs.rmSync(home, { recursive: true, force: true });
 });
 

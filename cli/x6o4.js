@@ -128,6 +128,27 @@ function syncFilterKey(flags) {
   return parts.join('|');
 }
 
+// 筛选拉取的候选池下界提示：筛选游标低于全局游标时，起点按全局游标算，
+// 编号不大于全局游标的未读（不带筛选的拉取已经越过的）不在本次候选池里。
+// 这是增量机制的预期行为，但是没有提示时「共 N 条」看起来完全正常，
+// 调用方无从察觉有存量被截在池外，因此单独给出一行说明。
+function poolBoundNotice(filter, filterCursor, globalCursor) {
+  if (!filter || filterCursor >= globalCursor) return '';
+  return `筛选 ${filter} 的游标(${filterCursor})低于全局游标(${globalCursor})：编号 ≤ ${globalCursor} 的未读不在本次候选池`
+    + '（增量机制：不带筛选的拉取已越过的条目不重复取）；要连这些存量一起重筛，先 x6o4 sync reset（会清零全部游标，含其他筛选的进度）';
+}
+
+// sync reset 之前各游标的原值文案。清零不可撤销，列出原值便于事后用
+// sync set 恢复不想清掉的那部分（例如只想重筛一个分类却误清了其他分类的进度）。
+function cursorValuesText(state) {
+  const parts = [];
+  const g = Number(state.unread_cursor) || 0;
+  if (g > 0) parts.push(`全局 ${g}`);
+  const filters = Object.entries(state.filter_cursors || {}).filter(([, v]) => Number(v) > 0);
+  if (filters.length) parts.push(`筛选 ${filters.map(([k, v]) => `${k}=${v}`).join('、')}`);
+  return parts.join('；');
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseArgs(rest);
@@ -246,6 +267,7 @@ async function main() {
     const globalCursor = useSync ? config.readCursor(config.SYNC_STATE_PATH) : 0;
     const filterCursor = syncFilter ? config.readFilterCursor(config.SYNC_STATE_PATH, syncFilter) : 0;
     const cursor = Math.max(globalCursor, filterCursor);
+    const boundNotice = poolBoundNotice(syncFilter, filterCursor, globalCursor);
     const params = {
       status: flags.status, starred: flags.starred ? 'true' : '',
       feed_id: flags['feed-id'], category_id: flags['category-id'],
@@ -323,13 +345,15 @@ async function main() {
       }));
       const skippedByState = beforeSkip - considered.filter((e) => !skip[e.id]).length;
       const syncInfo = useSync ? { sync_cursor_before: cursor, sync_scope: syncFilter || 'all' } : {};
+      const boundInfo = boundNotice ? { pool_bound_warning: boundNotice } : {};
       const fillInfo = fill > 0 ? { exhausted } : {};
-      console.log(JSON.stringify({ total, fetched: considered.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, ...fillInfo, entries: view }, null, 2));
+      console.log(JSON.stringify({ total, fetched: considered.length, filtered: entries.length, skipped_by_state: skippedByState, ...syncInfo, ...boundInfo, ...fillInfo, entries: view }, null, 2));
       return;
     }
     const cursorAfter = useSync
       ? (syncFilter ? config.readFilterCursor(config.SYNC_STATE_PATH, syncFilter) : config.readCursor(config.SYNC_STATE_PATH))
       : 0;
+    if (boundNotice) console.log(`⚠ ${boundNotice}`);
     console.log(`共 ${total} 条；本次取 ${considered.length} 条` +
       `${minRT ? `（时长≥${minRT}分钟后 ${entries.length} 条）` : ''}` +
       `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? considered.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
@@ -348,10 +372,22 @@ async function main() {
     const filter = syncFilterKey(flags);
     if (sub === 'reset') {
       // 不带筛选参数清零全部游标；带 --category-id/--feed-id 只清那一个筛选的。
+      // 清零前先读出原值一并输出：清零不可撤销，原值是事后用 sync set 恢复的依据。
+      const state = config.readJson(config.SYNC_STATE_PATH, {});
+      const globalBefore = Number(state.unread_cursor) || 0;
       config.clearCursors(config.SYNC_STATE_PATH, filter || undefined);
-      console.log(filter
-        ? `✔ 已清零筛选 ${filter} 的增量游标，下次按该筛选拉取将从最早的未读重新开始`
-        : '✔ 增量游标已全部清零（含各分类/订阅源的单独游标），下次拉取将从最早的未读重新开始');
+      if (filter) {
+        const filterBefore = Number((state.filter_cursors || {})[filter]) || 0;
+        // 筛选拉取的起点是全局游标与该筛选游标中较大者，因此全局游标仍在时，
+        // 只清筛选游标并不会回到最早的未读。
+        console.log(`✔ 已清零筛选 ${filter} 的增量游标${filterBefore ? `（原值 ${filterBefore}）` : ''}，`
+          + (globalBefore
+            ? `下次按该筛选拉取从全局游标 ${globalBefore} 之后重新开始（要连更早的存量一起重筛，需不带参数 x6o4 sync reset）`
+            : '下次按该筛选拉取将从最早的未读重新开始'));
+      } else {
+        const values = cursorValuesText(state);
+        console.log(`✔ 增量游标已全部清零（含各分类/订阅源的单独游标${values ? `；原值：${values}` : ''}），下次拉取将从最早的未读重新开始`);
+      }
       return;
     }
     if (sub === 'set') {
@@ -527,7 +563,7 @@ function usage() {
               [--min-reading-time N] [--fill N] [--sync] [--excerpt N] [--no-skip-state] [--print] --out 文件
   x6o4 sync status|set <id>|reset [--category-id N | --feed-id N]
                                  增量拉取游标查看/摆位/清零（set 把游标摆到指定条目——没处理到的未读下次还会取到；
-                                 清零后从未读最早重新开始；带筛选参数只作用于该筛选的游标）
+                                 reset 不带参数清零全局与全部筛选游标并列出原值，带筛选参数只清该筛选的游标）
   x6o4 mark-read --ids 9001,9002
   x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N]
                                  做成 epub（--from 可逗号分隔或重复传入多个文件；--max-mail-mb 一封邮件附件总体积上限，
@@ -540,4 +576,7 @@ function usage() {
   x6o4 config path|show|check   配置文件位置 / 关键设置（凑篇目标与体积上限） / 完整性检查`);
 }
 
-main().catch(fail);
+// 作为命令运行时才执行入口；被测试引入时只导出纯函数，不触发任何命令。
+if (require.main === module) main().catch(fail);
+
+module.exports = { poolBoundNotice, cursorValuesText };

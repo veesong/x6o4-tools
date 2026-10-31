@@ -187,6 +187,19 @@ function volumeTitle(base, idx, count) {
   return `${base}（${marks[idx] || idx + 1}）`;
 }
 
+// 默认副标题：册内首篇标题（净化后最多 SUBTITLE_MAX 字，超出截断加省略号，
+// 截断处的标点与空白去掉）；多于一篇时缀「 等N篇」，让书名能说明这是一册
+// 合集以及篇数。首篇固定不变，因此同一批文章重复生成得到相同的名字。
+const SUBTITLE_MAX = 24;
+function defaultSubtitle(entries) {
+  if (!entries.length) return '精选';
+  const first = sanitizeFilename(entries[0].title);
+  const head = first.length > SUBTITLE_MAX
+    ? `${first.slice(0, SUBTITLE_MAX).replace(/[\s，。、；：！？,.;:!?—-]+$/, '')}…`
+    : first;
+  return entries.length > 1 ? `${head} 等${entries.length}篇` : head;
+}
+
 // ---- 主体：构建一本或多册 ----
 // entries：[{id,title,url,author,content,published_at,reading_time,feed:{title}}]
 // opts：{ title, out（文件前缀，可省扩展名）, cfg（完整配置对象，读 cfg.epub）,
@@ -259,12 +272,11 @@ async function buildEpub(entries, opts) {
   if (cur.length) volumes.push(cur);
 
   // 第三遍：逐册组装打包
-  // 默认名「RSS 阅读-yyyyMMdd-副标题」：副标题按册内文章编号确定性选取
-  // （编号求和除以篇数取余，选中余数位置那一篇）——同一批文章重复生成
-  // 得到相同文件名、直接覆盖；同一天不同批次、同批多册之间编号集不同，
-  // 仍不易重名。文件名与书内书名完全一致（Kindle 书库显示文件名、多数
-  // 阅读器显示内部书名，统一后两边相同）。手动指定文件前缀或书名时，
-  // 仍按「前缀-册号」「书名（一）（二）」。
+  // 默认名「RSS 阅读-yyyyMMdd-首篇标题 等N篇」（副标题规则见 defaultSubtitle），
+  // 多册再追加（一）（二）——同一批文章重复生成得到相同文件名、直接覆盖；
+  // 同一天不同批次首篇不同，不易重名。文件名与书内书名完全一致（Kindle
+  // 书库显示文件名、多数阅读器显示内部书名，统一后两边相同）。手动指定
+  // 文件前缀或书名时，仍按「前缀-册号」「书名（一）（二）」。
   const now = new Date();
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
   const outPrefix = opts.out ? String(opts.out).replace(/\.epub$/i, '') : '';
@@ -279,9 +291,7 @@ async function buildEpub(entries, opts) {
         ? (volumes.length > 1 ? `${outPrefix}-${v + 1}.epub` : `${outPrefix}.epub`)
         : `RSS 阅读-${dateStr}-${bookTitle}.epub`;
     } else {
-      const pickIdx = vol.length ? vol.reduce((sum, ch) => sum + (Number(ch.entry.id) || 0), 0) % vol.length : 0;
-      const pickTitle = vol.length ? vol[pickIdx].entry.title : '精选';
-      bookTitle = `RSS 阅读-${dateStr}-${sanitizeFilename(pickTitle)}`;
+      bookTitle = volumeTitle(`RSS 阅读-${dateStr}-${defaultSubtitle(vol.map((c) => c.entry))}`, v, volumes.length);
       file = `${bookTitle}.epub`;
     }
     const zip = new JSZip();
@@ -318,5 +328,5 @@ async function buildEpub(entries, opts) {
 
 module.exports = {
   buildEpub, processImageBuffer,
-  escapeXml, xhtmlSelfClose, volumeTitle, replaceImages,
+  escapeXml, xhtmlSelfClose, volumeTitle, defaultSubtitle, replaceImages,
 };

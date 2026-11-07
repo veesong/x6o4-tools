@@ -60,6 +60,27 @@ function fail(e) {
   process.exit(1);
 }
 
+// 铸造「收藏文章」链接并挂到条目（v1.23）：链接由网关铸造（内含签名令牌，
+// 不含个人访问令牌），条目挂上 save_url 后 epub 页脚才会出现收藏行。
+// 超过单次上限 500 条按 500 分批。铸造失败（只读令牌 403、网关版本过旧 404、
+// 网络异常等）不阻断出书——stderr 提示一行后继续，epub 只是少了收藏行。
+async function applySaveLinks(entries, client) {
+  const byId = new Map();
+  try {
+    for (let i = 0; i < entries.length; i += 500) {
+      const r = await client.saveLinks(entries.slice(i, i + 500).map((e) => e.id));
+      for (const l of r.links || []) byId.set(l.entry_id, l.url);
+    }
+  } catch (err) {
+    console.error('（收藏链接未添加：' + (err && err.friendly ? err.friendly : err.message || err) + '）');
+    return;
+  }
+  for (const e of entries) {
+    const u = byId.get(e.id);
+    if (u) e.save_url = u;
+  }
+}
+
 // 摘要：剥标签后优先取第一个有实质内容的段落（脚注多的文章别截到脚注），
 // 总长默认 160 字。
 function excerptOf(content, n = 160) {
@@ -460,6 +481,7 @@ async function main() {
       ? Number(flags['max-mail-mb'])
       : Number((cfg.mail || {}).max_attachment_mb) || 0;
     const ftStats = await enrichEntries(picked, await readingConfigMap(client));
+    await applySaveLinks(picked, client);
     const { volumes, excluded, lastIncludedId } = await buildEpub(picked, {
       title: flags.title, out: flags.out, cfg,
       maxMailBytes: maxMailMb > 0 ? maxMailMb * MB : 0,
@@ -579,4 +601,4 @@ function usage() {
 // 作为命令运行时才执行入口；被测试引入时只导出纯函数，不触发任何命令。
 if (require.main === module) main().catch(fail);
 
-module.exports = { poolBoundNotice, cursorValuesText };
+module.exports = { poolBoundNotice, cursorValuesText, applySaveLinks };

@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const JSZip = require('jszip');
 const sharp = require('sharp');
-const { buildEpub, processImageBuffer, escapeXml, xhtmlSelfClose, volumeTitle, defaultSubtitle, replaceImages } = require('../cli/epub');
+const { buildEpub, processImageBuffer, escapeXml, xhtmlSelfClose, volumeTitle, defaultSubtitle, replaceImages, chapterXhtml } = require('../cli/epub');
 
 test('escapeXml：裸 & 转义，既有实体保留', () => {
   assert.strictEqual(escapeXml('a & b &amp; c &#65; &#x41;'), 'a &amp; b &amp; c &#65; &#x41;');
@@ -91,10 +91,33 @@ test('buildEpub：结构（mimetype 首条且不压缩/清单/章节/引用一�
   assert.match(ch, /<h1>文章1<\/h1>/);
   assert.match(ch, /原文链接/);
   assert.match(ch, /来源：源/);
+  // 未铸造收藏链接（无 save_url）时不出收藏行
+  assert.ok(!ch.includes('收藏文章'), '无 save_url 不应出现收藏行');
   const opf = await zip.files['OEBPS/content.opf'].async('string');
   assert.match(opf, /urn:uuid:/);
   assert.match(opf, /测试书（一）/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('chapterXhtml：带 save_url 时在原文链接下方渲染收藏文章行', () => {
+  const { escapeXml } = require('../cli/epub');
+  const entry = {
+    id: 9, title: '标 题', url: 'https://e.example/9?a=1&b=2',
+    save_url: 'https://rss-cloud.example/ebook/save/9?t=42.9.1.abc-DEF',
+    feed: { title: '源<名>' }, content: '',
+  };
+  const ch = chapterXhtml(entry, '<p>正文</p>');
+  // 收藏行在原文链接行之后，URL 与标题均经转义
+  assert.match(ch, /原文链接：/);
+  assert.ok(ch.indexOf('原文链接：') < ch.indexOf('收藏文章'), '收藏行应紧跟原文链接之后');
+  assert.ok(ch.includes(`<a href="${entry.save_url}">收藏文章</a>`), '收藏行链接应为转义后的 save_url');
+  assert.match(ch, /原文链接：<a href="https:\/\/e\.example\/9\?a=1&amp;b=2">/);
+  assert.match(ch, /来源：源&lt;名&gt;/);
+  // save_url 缺省不渲染（隐式 undefined / 空串均视为无链接）
+  for (const saveUrl of [undefined, '']) {
+    const plain = chapterXhtml({ ...entry, save_url: saveUrl }, '');
+    assert.ok(!plain.includes('收藏文章'), '无有效 save_url 不应出现收藏行');
+  }
 });
 
 test('buildEpub：不传 out 时文件名为 RSS 阅读-当天日期-首篇标题（单篇不加等N篇）', async () => {

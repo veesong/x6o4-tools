@@ -180,3 +180,48 @@ test('build-epub：--from 重复传参等价于逗号列表（离线）', () => 
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+// v1.23：收藏链接铸造——按条目 id 挂 save_url；铸造失败降级（不抛错、不挂链接），
+// 超过 500 条按 500 分批。
+test('applySaveLinks：挂链接、失败降级、分批铸造', async () => {
+  const { applySaveLinks } = require('../cli/x6o4');
+  const mk = (i) => ({ id: i, title: `文${i}`, url: `https://e.example/${i}` });
+
+  // 正常：返回的链接按 entry_id 对应挂载
+  const calls = [];
+  const client = {
+    saveLinks: async (ids) => {
+      calls.push([...ids]);
+      return { links: ids.map((id) => ({ entry_id: id, url: `https://g/ebook/save/${id}?t=ok` })) };
+    },
+  };
+  const entries = [mk(3), mk(1), mk(2)];
+  await applySaveLinks(entries, client);
+  assert.deepStrictEqual(calls, [[3, 1, 2]], '单批应一次铸造且保持条目顺序');
+  assert.strictEqual(entries[0].save_url, 'https://g/ebook/save/3?t=ok');
+  assert.strictEqual(entries[1].save_url, 'https://g/ebook/save/1?t=ok');
+
+  // 网关漏掉个别条目（如铸造列表与挑选列表错位）时不挂该条
+  const partial = [mk(7), mk(8)];
+  await applySaveLinks(partial, {
+    saveLinks: async () => ({ links: [{ entry_id: 7, url: 'https://g/ebook/save/7?t=ok' }] }),
+  });
+  assert.strictEqual(partial[0].save_url, 'https://g/ebook/save/7?t=ok');
+  assert.strictEqual(partial[1].save_url, undefined, '未被铸造的条目不挂链接');
+
+  // 失败降级：不抛错、不挂任何链接（错误提示走 stderr，此处无需断言其内容）
+  const failed = [mk(5), mk(6)];
+  await applySaveLinks(failed, {
+    saveLinks: async () => { throw new Error('HTTP 403'); },
+  });
+  assert.strictEqual(failed[0].save_url, undefined);
+  assert.strictEqual(failed[1].save_url, undefined);
+
+  // 分批：520 条 → 500 + 20 两批
+  const batchCalls = [];
+  await applySaveLinks(
+    Array.from({ length: 520 }, (_, i) => mk(i + 1)),
+    { saveLinks: async (ids) => { batchCalls.push(ids.length); return { links: ids.map((id) => ({ entry_id: id, url: 'u' + id })) }; } },
+  );
+  assert.deepStrictEqual(batchCalls, [500, 20], '超过 500 条应分批');
+});

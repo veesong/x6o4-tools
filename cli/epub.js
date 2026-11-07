@@ -69,12 +69,18 @@ async function replaceImages(html, fn) {
 }
 
 // ---- 章节与书结构 ----
+// entry.save_url 存在时在原文链接下方追加「收藏文章」行（v1.23）：链接由网关
+// 铸造（含签名令牌，不含个人访问令牌），点开是网关的墨水屏收藏确认页；
+// 铸造失败（只读令牌等）时 save_url 缺省，本行整体不出现。
 function chapterXhtml(entry, bodyHtml) {
   const meta = [
     entry.feed && entry.feed.title ? `来源：${entry.feed.title}` : '',
     entry.author ? `作者：${entry.author}` : '',
     entry.published_at ? `发布：${String(entry.published_at).slice(0, 10)}` : '',
   ].filter(Boolean).join(' ｜ ');
+  const saveLine = entry.save_url
+    ? `\n<p class="meta"><a href="${escapeXml(entry.save_url)}">收藏文章</a></p>`
+    : '';
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh">
@@ -83,7 +89,7 @@ function chapterXhtml(entry, bodyHtml) {
 <h1>${escapeXml(entry.title)}</h1>
 <p class="meta">${escapeXml(meta)}</p>
 ${bodyHtml}
-<p class="meta">原文链接：<a href="${escapeXml(entry.url)}">${escapeXml(entry.url)}</a></p>
+<p class="meta">原文链接：<a href="${escapeXml(entry.url)}">${escapeXml(entry.url)}</a></p>${saveLine}
 </body>
 </html>`;
 }
@@ -328,5 +334,5 @@ async function buildEpub(entries, opts) {
 
 module.exports = {
   buildEpub, processImageBuffer,
-  escapeXml, xhtmlSelfClose, volumeTitle, defaultSubtitle, replaceImages,
+  escapeXml, xhtmlSelfClose, volumeTitle, defaultSubtitle, replaceImages, chapterXhtml,
 };

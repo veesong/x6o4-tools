@@ -90,6 +90,9 @@ class Api {
   async feeds() { return this.req('GET', '/api/v1/agent/feeds'); }
   async entries(params) { return this.req('GET', '/api/v1/agent/entries', { query: params }); }
   async markRead(ids) { return this.req('POST', '/api/v1/agent/entries/read', { body: { entry_ids: ids } }); }
+  // 批量铸造「收藏文章」链接（需读写档令牌；返回 {links:[{entry_id,url}]}，
+  // 链接内是网关签名的短时效令牌，不含个人访问令牌）。
+  async saveLinks(ids) { return this.req('POST', '/api/v1/agent/save-links', { body: { entry_ids: ids } }); }
   // 保存单源阅读设置（需读写档令牌）。
   async putReadingConfig(feedId, cfg) {
     return this.req('PUT', `/api/v1/agent/feeds/${feedId}/reading-config`, { body: cfg });

@@ -145,6 +145,7 @@ test('build-epub：多 --from 合并 + 体积截断输出未入选与末篇 id�
   ], env);
   assert.ok(out.includes('1 篇'), '应只装 1 篇');
   assert.ok(out.includes('（条目 1）'), '册行应含条目编号');
+  assert.ok(out.includes(path.join(work, 'book.epub')), '完成行「→」后面应是文件绝对路径');
   assert.ok(out.includes('因体积未入选 3 篇'), '应输出未入选计数');
   for (const id of [2, 3, 4]) assert.ok(out.includes(`- ${id} 文章${id}`), `未入选应含 ${id}`);
   assert.ok(out.includes('最后入选条目 id：1'), '应输出末篇 id');

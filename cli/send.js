@@ -41,7 +41,18 @@ async function planGroups(files) {
   let items = [];
   for (const f of files) {
     const abs = path.resolve(f);
-    const st = await fsp.stat(abs);
+    let st;
+    try {
+      st = await fsp.stat(abs);
+    } catch (e) {
+      // 文件不存在时给定位指引：build-epub 默认生成在当前工作目录，
+      // 调用方最容易错的是自造路径或用通配符（含中文的通配符在
+      // Windows 终端传递时可能编码错乱导致匹配不到）。
+      if (e && e.code === 'ENOENT') {
+        throw new Error(`附件文件不存在：${abs}。build-epub 未指定 --out 时把文件生成在运行命令的目录（当前工作目录），不是 /tmp；请用 build-epub 完成行「→」后面的完整路径原样传给 --file，不要自己拼路径或用通配符`);
+      }
+      throw e;
+    }
     items.push({ abs, name: path.basename(abs), size: st.size });
   }
 

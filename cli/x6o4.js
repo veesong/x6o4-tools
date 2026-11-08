@@ -487,7 +487,9 @@ async function main() {
       maxMailBytes: maxMailMb > 0 ? maxMailMb * MB : 0,
     });
     for (const r of volumes) {
-      console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 / ${(r.size / MB).toFixed(1)}MB → ${r.file}（条目 ${r.ids.join(',')}）`);
+      // 输出绝对路径：生成位置是当前工作目录，只打印裸文件名时
+      // 调用方（AI 助手/脚本）可能把文件误认为在其他目录。
+      console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 / ${(r.size / MB).toFixed(1)}MB → ${path.resolve(r.file)}（条目 ${r.ids.join(',')}）`);
     }
     if (excluded.length) {
       console.log(`因体积未入选 ${excluded.length} 篇（保持未读，下次自动再取）：`);

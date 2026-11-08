@@ -45,6 +45,17 @@ test('planGroups：超过数量上限拆多组', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('planGroups：附件不存在时报中文定位提示（ENOENT）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-send-'));
+  const missing = path.join(dir, '不存在的书.epub');
+  await assert.rejects(
+    () => planGroups([missing]),
+    (e) => /附件文件不存在/.test(e.message) && e.message.includes(missing)
+      && /当前工作目录/.test(e.message) && /完整路径原样传给/.test(e.message),
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('agentlyArgs：收件人/主题/正文/附件路径按命令行格式组装', () => {
   const group = { dir: '/tmp', files: [{ rel: 'a.epub' }, { rel: 'b.epub' }] };
   const args = agentlyArgs(group, { to: 'k@kindle.com', subject: '书名', body: '内容' });

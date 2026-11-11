@@ -14,6 +14,9 @@ const { installSkills } = require('./skills');
 const { exportMd } = require('./md');
 const { enrichEntries, newStats, fulltextLine } = require('./fulltext');
 const { parseLangFlag, resolveLang } = require('./i18n');
+// 界面文案与界面语言（终端输出语言）：入口处判定一次并 setUiLang，此后所有
+// 输出经 ui() 取当前语言表；被测试直接导入纯函数时缺省中文。
+const { setUiLang, ui, uiLangOf } = require('./uitext');
 
 const SKIP_TTL_DAYS = 30;
 const MB = 1024 * 1024;
@@ -45,8 +48,8 @@ function api() {
   const cfg = config.load();
   const chk = config.check(cfg);
   if (chk.base_url_invalid || !cfg.token) {
-    console.error('✘ 配置未就绪：' + (chk.base_url_invalid || '缺少令牌'));
-    console.error('  请先运行 x6o4 login（终端交互输入邮箱密码，自动换取长期令牌）');
+    console.error(ui().cfgNotReady(chk.base_url_invalid || ui().cfgMissingToken));
+    console.error(ui().cfgLoginHint);
     process.exit(1);
   }
   return { cfg, client: new Api(cfg.base_url, cfg.token) };
@@ -70,7 +73,7 @@ function langOf(flags, cfg) {
     cfgValue: (cfg.epub || {}).language,
   });
   if (cfgInvalid) {
-    console.error(`（配置 epub.language 的值「${cfgInvalid}」无法识别，应为 zh 或 en；本次按系统环境判断为 ${lang}）`);
+    console.error(ui().langCfgInvalid(cfgInvalid, lang));
   }
   return lang;
 }
@@ -87,7 +90,7 @@ async function applySaveLinks(entries, client) {
       for (const l of r.links || []) byId.set(l.entry_id, l.url);
     }
   } catch (err) {
-    console.error('（收藏链接未添加：' + (err && err.friendly ? err.friendly : err.message || err) + '）');
+    console.error(ui().saveLinksFail(err && err.friendly ? err.friendly : err.message || err));
     return;
   }
   for (const e of entries) {
@@ -170,30 +173,38 @@ function syncFilterKey(flags) {
 // 调用方无从察觉有存量被截在池外，因此单独给出一行说明。
 function poolBoundNotice(filter, filterCursor, globalCursor) {
   if (!filter || filterCursor >= globalCursor) return '';
-  return `筛选 ${filter} 的游标(${filterCursor})低于全局游标(${globalCursor})：编号 ≤ ${globalCursor} 的未读不在本次候选池`
-    + '（增量机制：不带筛选的拉取已越过的条目不重复取）；要连这些存量一起重筛，先 x6o4 sync reset（会清零全部游标，含其他筛选的进度）';
+  return ui().poolBound(filter, filterCursor, globalCursor);
 }
 
 // sync reset 之前各游标的原值文案。清零不可撤销，列出原值便于事后用
 // sync set 恢复不想清掉的那部分（例如只想重筛一个分类却误清了其他分类的进度）。
 function cursorValuesText(state) {
+  const t = ui();
   const parts = [];
   const g = Number(state.unread_cursor) || 0;
-  if (g > 0) parts.push(`全局 ${g}`);
+  if (g > 0) parts.push(t.cursorGlobalLabel(g));
   const filters = Object.entries(state.filter_cursors || {}).filter(([, v]) => Number(v) > 0);
-  if (filters.length) parts.push(`筛选 ${filters.map(([k, v]) => `${k}=${v}`).join('、')}`);
-  return parts.join('；');
+  if (filters.length) parts.push(t.cursorFilterPrefix + filters.map(([k, v]) => t.cursorFilterLabel(k, v)).join(t.cursorItemJoin));
+  return parts.join(t.cursorJoin);
 }
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseArgs(rest);
+  // 界面语言判定（--lang 参数 > 配置 ui.language > 系统区域设置）：入口处
+  // 设置一次，此后全部终端输出（含帮助文本）经 ui() 取表。--lang 非法值在
+  // 这里就报错，早于任何读文件与联网的动作。
+  const u = uiLangOf(flags, config.load());
+  setUiLang(u.lang);
+  if (u.cfgInvalid) console.error(ui().uiCfgInvalid(u.cfgInvalid, u.lang));
   if (!cmd || cmd === 'help' || flags.help) return usage();
 
   if (cmd === 'login') {
     return runLogin({
       name: flags.name,
       scope: flags.scope === 'read' ? 'read' : 'readwrite',
+      // --lang 显式给定时不问界面语言（本次运行已按参数切换）。
+      skipLangPrompt: flags.lang !== undefined,
     });
   }
 
@@ -208,35 +219,69 @@ async function main() {
       console.log(config.CONFIG_PATH);
       return;
     }
+    // 界面语言的查看与设置：zh/en 写入配置 ui.language；auto 清除设置恢复
+    // 跟随系统。不带值时显示当前判定结果与来源。
+    if (sub === 'language') {
+      const t = ui();
+      const arg = String(positional[1] || '').trim().toLowerCase();
+      if (!arg) {
+        const r = uiLangOf(flags, cfg);
+        const src = flags.lang ? t.langSrcFlag
+          : (r.cfgInvalid ? t.langSrcInvalidUiCfg(r.cfgInvalid)
+            : (cfg.ui && cfg.ui.language ? t.langSrcUiCfg : t.langSrcSystem));
+        console.log(t.cfgShowUiLang(r.lang, src));
+        return;
+      }
+      if (arg === 'auto') {
+        const next = { ...cfg, ui: { ...(cfg.ui || {}), language: '' } };
+        config.save(next);
+        console.log(t.langCmdAuto);
+        return;
+      }
+      if (arg !== 'zh' && arg !== 'en') {
+        console.error(t.langCmdUsage);
+        process.exitCode = 1;
+        return;
+      }
+      config.save({ ...cfg, ui: { ...(cfg.ui || {}), language: arg } });
+      console.log(t.langCmdSet(arg));
+      return;
+    }
     if (sub === 'show') {
       // 显示关键非敏感设置（不含令牌与授权码），供技能读取推送参数。
-      console.log(`未读推送：凑篇目标 ${cfg.unread.max_articles_per_run} 篇/次（配置 unread.max_articles_per_run）`);
-      console.log(`邮件附件体积上限：${(cfg.mail || {}).max_attachment_mb} MB（配置 mail.max_attachment_mb）`);
-      console.log(`电子书：单册图片预算 ${cfg.epub.max_total_mb} MB、单册篇数上限 ${cfg.epub.max_articles_per_book}`);
+      const t = ui();
+      console.log(t.cfgShowUnread(cfg.unread.max_articles_per_run));
+      console.log(t.cfgShowMailMb((cfg.mail || {}).max_attachment_mb));
+      console.log(t.cfgShowEpub(cfg.epub.max_total_mb, cfg.epub.max_articles_per_book));
+      const uiR = uiLangOf(flags, cfg);
+      const uiSrc = uiR.cfgInvalid ? t.langSrcInvalidUiCfg(uiR.cfgInvalid)
+        : (cfg.ui && cfg.ui.language ? t.langSrcUiCfg : t.langSrcSystem);
+      console.log(t.cfgShowUiLang(uiR.lang, uiSrc));
       const langR = resolveLang({ cfgValue: cfg.epub.language });
       const langSrc = langR.cfgInvalid
-        ? `配置 epub.language 的值「${langR.cfgInvalid}」无法识别，已按系统环境判断`
-        : (cfg.epub.language ? '配置 epub.language' : '按系统环境自动判断');
-      console.log(`文案语言：${langR.lang}（${langSrc}；生成与发送命令可用 --lang zh|en 临时指定）`);
-      console.log(`发信方式：${cfg.mail_transport}${cfg.kindle_email ? `；Kindle 接收：${cfg.kindle_email}` : ''}`);
+        ? t.langSrcInvalidTextCfg(langR.cfgInvalid)
+        : (cfg.epub.language ? t.langSrcTextCfg : t.langSrcSystem);
+      console.log(t.cfgShowTextLang(langR.lang, langSrc));
+      console.log(t.cfgShowTransport(cfg.mail_transport, cfg.kindle_email));
       return;
     }
     const chk = config.check(cfg, { needKindle: true, needObsidian: true });
     if (chk.base_url_invalid) console.log('✘ ' + chk.base_url_invalid);
-    for (const m of chk.missing) console.log('✘ 缺少 ' + m);
-    if (chk.ok) console.log('✔ 配置完整（含 Kindle 与笔记库字段）');
+    for (const m of chk.missing) console.log(ui().cfgCheckMissing(m));
+    if (chk.ok) console.log(ui().cfgCheckOk);
     else process.exitCode = 1;
     return;
   }
 
   if (cmd === 'status') {
     const { cfg, client } = api();
+    const t = ui();
     const me = await client.me();
-    console.log(`账号：${me.user.email}（${me.user.nickname || '-'}）`);
-    console.log(`权益：${me.entitled ? '有效' : '无（' + (me.block_reason || '未知') + '）'}`);
-    console.log(`未读：${me.unread_total == null ? '未知' : me.unread_total} 篇`);
-    console.log(`收藏：${me.starred_total == null ? '未知' : me.starred_total} 篇`);
-    console.log(`令牌：${cfg.token.slice(0, 12)}…（只显示前缀）`);
+    console.log(t.statusAccount(me.user.email, me.user.nickname));
+    console.log(t.statusEntitle(!!me.entitled, me.block_reason));
+    console.log(t.statusUnread(me.unread_total));
+    console.log(t.statusStarred(me.starred_total));
+    console.log(t.statusToken(cfg.token.slice(0, 12)));
     return;
   }
 
@@ -245,9 +290,9 @@ async function main() {
     const sub = positional[0] || 'list';
     if (sub === 'revoke') {
       const id = Number(positional[1]);
-      if (!id) { console.error('用法：x6o4 tokens revoke <编号>'); process.exitCode = 1; return; }
+      if (!id) { console.error(ui().tokensUsage); process.exitCode = 1; return; }
       await client.revokeToken(id);
-      console.log(`✔ 已吊销令牌 ${id}`);
+      console.log(ui().tokensRevoked(id));
       return;
     }
     const { tokens } = await client.listTokens();
@@ -258,6 +303,7 @@ async function main() {
   if (cmd === 'feeds') {
     const { client } = api();
     const sub = positional[0];
+    const t = ui();
     if (sub === 'config') {
       // 保存单源阅读设置（需读写档令牌；手机 App 与网页管理页共用同一份设置）
       const id = Number(flags.id);
@@ -265,7 +311,7 @@ async function main() {
       const full = toBool(String(flags.full));
       const referer = toBool(String(flags.referer));
       if (!id || full === undefined || referer === undefined) {
-        console.error('用法：x6o4 feeds config --id N --full true|false --referer true|false [--referer-url 网址]');
+        console.error(t.feedsConfigUsage);
         process.exitCode = 1;
         return;
       }
@@ -274,17 +320,17 @@ async function main() {
         body.referer_url = String(flags['referer-url']);
       }
       await client.putReadingConfig(id, body);
-      console.log(`✔ 已保存订阅源 ${id} 的阅读设置（拉取原文：${full ? '开' : '关'}；解除图片防盗链：${referer ? '开' : '关'}${body.referer_url ? `；来源网址 ${body.referer_url}` : ''}）`);
+      console.log(t.feedsConfigSaved(id, full, referer, body.referer_url));
       return;
     }
     const { feeds, categories } = await client.feeds();
-    console.log(`订阅源 ${feeds.length} 个 / 分类 ${categories.length} 个：`);
+    console.log(t.feedsHead(feeds.length, categories.length));
     for (const f of feeds) {
       const cat = f.category ? `[#${f.category.id} ${f.category.title}]` : '[]';
       const marks = [];
-      if (f.reading_config && f.reading_config.full) marks.push('全文');
-      if (f.reading_config && f.reading_config.referer) marks.push('防盗链');
-      console.log(`  ${f.id}\t${cat}\t未读 ${f.unread}\t${f.title}${marks.length ? `  [${marks.join(' ')}]` : ''}`);
+      if (f.reading_config && f.reading_config.full) marks.push(t.feedsMarkFull);
+      if (f.reading_config && f.reading_config.referer) marks.push(t.feedsMarkReferer);
+      console.log(`  ${f.id}\t${cat}\t${t.feedsUnread(f.unread)}\t${f.title}${marks.length ? `  [${marks.join(' ')}]` : ''}`);
     }
     return;
   }
@@ -300,7 +346,7 @@ async function main() {
     // 推进该筛选的游标；全局游标只由不带筛选的拉取推进。
     const useSync = !!flags.sync;
     if (useSync && (flags.order || flags.direction)) {
-      console.error('✘ --sync 自带按编号升序，请去掉 --order/--direction（两者不能同用）');
+      console.error(ui().entriesSyncOrder);
       process.exitCode = 1;
       return;
     }
@@ -375,7 +421,7 @@ async function main() {
         else config.writeCursor(config.SYNC_STATE_PATH, maxId);
       }
     } else if (useSync) {
-      console.error('⚠ 未指定 --out，游标未推进（下次仍从同一位置取）');
+      console.error(ui().entriesNoOut);
     }
     if (flags.print) {
       const view = entries.map((e) => ({
@@ -395,22 +441,28 @@ async function main() {
       ? (syncFilter ? config.readFilterCursor(config.SYNC_STATE_PATH, syncFilter) : config.readCursor(config.SYNC_STATE_PATH))
       : 0;
     if (boundNotice) console.log(`⚠ ${boundNotice}`);
-    console.log(`共 ${total} 条；本次取 ${considered.length} 条` +
-      `${minRT ? `（时长≥${minRT}分钟后 ${entries.length} 条）` : ''}` +
-      `${Object.keys(skip).length ? `、跳过记录排除 ${beforeSkip - entries.length - (minRT ? considered.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)} 条` : ''}` +
-      (fill > 0 && exhausted ? '；未读池已取尽' : '') +
-      (useSync
-        ? (syncFilter
-          ? `；增量游标[${syncFilter}] ${filterCursor} → ${cursorAfter}（全局游标 ${globalCursor} 未动）`
-          : `；增量游标 ${cursor} → ${cursorAfter}`)
-        : '') +
-      (out ? `；全文已写入 ${out}` : '（未指定 --out，正文未保存）'));
+    // 汇总行由界面语言表拼装：各段是否出现由这里的条件算好传入（跳过记录
+    // 排除数的口径依赖 minRT 是否生效，保持与历史行为一致）。
+    const skippedByState = Object.keys(skip).length
+      ? beforeSkip - entries.length - (minRT ? considered.filter((e) => (e.reading_time || 0) >= minRT).length - entries.length : 0)
+      : null;
+    console.log(ui().entriesSummary({
+      total, fetched: considered.length, filtered: entries.length, minRT,
+      skippedByState,
+      exhausted: fill > 0 && exhausted,
+      syncFilter: useSync && syncFilter ? syncFilter : null,
+      sync: useSync ? 1 : null,
+      cursorBefore: useSync && syncFilter ? filterCursor : cursor,
+      cursorAfter, globalCursor,
+      out: out || '',
+    }));
     return;
   }
 
   if (cmd === 'sync') {
     const sub = positional[0] || 'status';
     const filter = syncFilterKey(flags);
+    const t = ui();
     if (sub === 'reset') {
       // 不带筛选参数清零全部游标；带 --category-id/--feed-id 只清那一个筛选的。
       // 清零前先读出原值一并输出：清零不可撤销，原值是事后用 sync set 恢复的依据。
@@ -421,13 +473,9 @@ async function main() {
         const filterBefore = Number((state.filter_cursors || {})[filter]) || 0;
         // 筛选拉取的起点是全局游标与该筛选游标中较大者，因此全局游标仍在时，
         // 只清筛选游标并不会回到最早的未读。
-        console.log(`✔ 已清零筛选 ${filter} 的增量游标${filterBefore ? `（原值 ${filterBefore}）` : ''}，`
-          + (globalBefore
-            ? `下次按该筛选拉取从全局游标 ${globalBefore} 之后重新开始（要连更早的存量一起重筛，需不带参数 x6o4 sync reset）`
-            : '下次按该筛选拉取将从最早的未读重新开始'));
+        console.log(t.syncResetFilter(filter, filterBefore, globalBefore));
       } else {
-        const values = cursorValuesText(state);
-        console.log(`✔ 增量游标已全部清零（含各分类/订阅源的单独游标${values ? `；原值：${values}` : ''}），下次拉取将从最早的未读重新开始`);
+        console.log(t.syncResetAll(cursorValuesText(state)));
       }
       return;
     }
@@ -438,43 +486,41 @@ async function main() {
       // 键换算与 entries 筛选拉取一致。
       const id = Number(positional[1]);
       if (!Number.isInteger(id) || id <= 0) {
-        console.error('用法：x6o4 sync set <条目id，正整数> [--category-id N | --feed-id N]');
+        console.error(t.syncSetUsage);
         process.exitCode = 1;
         return;
       }
       if (filter) config.writeFilterCursor(config.SYNC_STATE_PATH, filter, id);
       else config.writeCursor(config.SYNC_STATE_PATH, id);
-      console.log(filter
-        ? `✔ 已把筛选 ${filter} 的增量游标摆到 ${id}（比它大的未读下次还会取到）`
-        : `✔ 已把增量游标摆到 ${id}（比它大的未读下次还会取到）`);
+      console.log(filter ? t.syncSetFilterDone(filter, id) : t.syncSetDone(id));
       return;
     }
-    if (sub !== 'status') { console.error('用法：x6o4 sync status|set <id>|reset [--category-id N | --feed-id N]'); process.exitCode = 1; return; }
+    if (sub !== 'status') { console.error(t.syncUsage); process.exitCode = 1; return; }
     const c = config.readCursor(config.SYNC_STATE_PATH);
     const filters = Object.entries(config.readJson(config.SYNC_STATE_PATH, {}).filter_cursors || {});
     if (c === 0 && filters.length === 0) {
-      console.log('增量游标：未启用（还没有用 --sync 拉取过）');
+      console.log(t.syncStatusNone);
       return;
     }
-    if (c > 0) console.log(`增量游标（全部未读）：${c}（只取编号比它大的未读文章）`);
-    for (const [k, v] of filters) console.log(`增量游标（筛选 ${k}）：${v}`);
-    console.log('x6o4 sync reset 全部清零；x6o4 sync reset --category-id N（或 --feed-id N）只清某一个；x6o4 sync set <id> 摆到指定位置');
+    if (c > 0) console.log(t.syncStatusGlobal(c));
+    for (const [k, v] of filters) console.log(t.syncStatusFilter(k, v));
+    console.log(t.syncStatusHint);
     return;
   }
 
   if (cmd === 'mark-read') {
     const { client } = api();
-    if (!flags.ids) { console.error('用法：x6o4 mark-read --ids 9001,9002'); process.exitCode = 1; return; }
+    if (!flags.ids) { console.error(ui().markReadUsage); process.exitCode = 1; return; }
     const ids = String(flags.ids).split(',').map((s) => Number(s.trim())).filter(Boolean).slice(0, 500);
     const r = await client.markRead(ids);
-    console.log(`✔ 已标记 ${r.updated} 条为已读`);
+    console.log(ui().markReadDone(r.updated));
     return;
   }
 
   if (cmd === 'build-epub') {
-    parseLangFlag(flags.lang); // 语言值不合法时在读文件与访问网络之前就报错
     const { cfg, client } = api();
-    if (!flags.ids || !flags.from) { console.error('用法：x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N] [--lang zh|en]'); process.exitCode = 1; return; }
+    const t = ui();
+    if (!flags.ids || !flags.from) { console.error(t.buildUsage); process.exitCode = 1; return; }
     const lang = langOf(flags, cfg);
     const want = String(flags.ids).split(',').map((s) => Number(s.trim())).filter(Boolean);
     // --from 支持逗号分隔多文件：凑篇循环每批一个文件，这里合并成条目池
@@ -493,7 +539,7 @@ async function main() {
       else missing.push(id);
     }
     if (missing.length) {
-      console.error('✘ 以下条目不在 --from 文件里（请先重跑 entries 命令）：' + missing.join(', '));
+      console.error(t.buildMissingIds(missing.join(', ')));
       process.exitCode = 1;
       return;
     }
@@ -511,40 +557,40 @@ async function main() {
     for (const r of volumes) {
       // 输出绝对路径：生成位置是当前工作目录，只打印裸文件名时
       // 调用方（AI 助手/脚本）可能把文件误认为在其他目录。
-      console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 / ${(r.size / MB).toFixed(1)}MB → ${path.resolve(r.file)}（条目 ${r.ids.join(',')}）`);
+      console.log(t.buildVolume(r, path.resolve(r.file)));
     }
-    console.log(`文案语言：${lang}`);
+    console.log(t.buildTextLang(lang));
     if (excluded.length) {
-      console.log(`因体积未入选 ${excluded.length} 篇（保持未读，下次自动再取）：`);
-      for (const e of excluded) console.log(`  - ${e.id} ${e.title}`);
+      console.log(t.buildExcludedHead(excluded.length));
+      for (const e of excluded) console.log(t.buildExcludedItem(e));
     }
-    if (lastIncludedId !== null) console.log(`最后入选条目 id：${lastIncludedId}`);
+    if (lastIncludedId !== null) console.log(t.buildLastIncluded(lastIncludedId));
     const ftLine = fulltextLine(ftStats);
     if (ftLine) console.log(ftLine);
     return;
   }
 
   if (cmd === 'send-kindle') {
-    parseLangFlag(flags.lang);
     const { cfg } = api();
-    if (!flags.file) { console.error('用法：x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名] [--lang zh|en]'); process.exitCode = 1; return; }
+    const t = ui();
+    if (!flags.file) { console.error(t.sendUsage); process.exitCode = 1; return; }
     const files = String(flags.file).split(',').map((s) => s.trim()).filter(Boolean);
     const r = await sendKindle(files, cfg, { subject: flags.subject, lang: langOf(flags, cfg) });
-    console.log(`✔ 已发送 ${r.emails} 封邮件（附件 ${r.attachments.length} 个）到 ${cfg.kindle_email}`);
-    for (const w of r.warnings || []) console.log(`⚠ ${w}（不影响本次推送）`);
+    console.log(t.sendDone(r.emails, r.attachments.length, cfg.kindle_email));
+    for (const w of r.warnings || []) console.log(t.sendWarn(w));
     return;
   }
 
   if (cmd === 'export-md') {
-    parseLangFlag(flags.lang);
     const { cfg, client } = api();
-    if (!flags.from) { console.error('用法：x6o4 export-md --from entries.json [--since 2026-01-01] [--lang zh|en]'); process.exitCode = 1; return; }
+    const t = ui();
+    if (!flags.from) { console.error(t.mdUsage); process.exitCode = 1; return; }
     const data = JSON.parse(fs.readFileSync(flags.from, 'utf8'));
     const hook = enrichHook(await readingConfigMap(client));
     const r = await exportMd(data.entries || [], cfg, { since: flags.since, enrich: hook.enrich, lang: langOf(flags, cfg) });
-    console.log(`✔ 新增 ${r.added.length} 篇，跳过 ${r.skipped.length} 篇（已导入/范围外）${r.failed.length ? `，失败 ${r.failed.length} 篇` : ''}`);
-    for (const a of r.added) console.log(`  + ${a.file} ← ${a.title}`);
-    for (const f of r.failed) console.log(`  ✘ ${f.title}：${f.reason}`);
+    console.log(t.mdDone(r.added.length, r.skipped.length, r.failed.length));
+    for (const a of r.added) console.log(t.mdAdded(a.file, a.title));
+    for (const f of r.failed) console.log(t.mdFailed(f.title, f.reason));
     const ftLine = fulltextLine(hook.stats);
     if (ftLine) console.log(ftLine);
     return;
@@ -552,17 +598,17 @@ async function main() {
 
   if (cmd === 'skills') {
     const sub = positional[0] || 'install';
-    if (sub !== 'install') { console.error('用法：x6o4 skills install'); process.exitCode = 1; return; }
+    if (sub !== 'install') { console.error(ui().skillsUsage); process.exitCode = 1; return; }
     const results = installSkills();
     const labels = {
-      linked: '✔ 已链接（随 npm 包自动更新）',
-      copied: '✔ 已复制（链接创建失败时的兜底，不随 npm 自动更新）',
-      skipped: '↷ 跳过（该目录已存在且不是本工具的链接，未改动）',
-      missing: '✘ 安装包里找不到该技能',
+      linked: ui().skillsLinked,
+      copied: ui().skillsCopied,
+      skipped: ui().skillsSkipped,
+      missing: ui().skillsMissing,
     };
     let bad = false;
     for (const r of results) {
-      console.log(`${r.name}：${labels[r.action]}`);
+      console.log(`${r.name}${ui().skillsNameSep}${labels[r.action]}`);
       if (r.action === 'missing') bad = true;
     }
     if (bad) process.exitCode = 1;
@@ -571,25 +617,26 @@ async function main() {
 
   if (cmd === 'skip') {
     const sub = positional[0] || 'list';
+    const t = ui();
     if (sub === 'add') {
-      if (!flags.ids) { console.error('用法：x6o4 skip add --ids 9001,9002 [--days 30]'); process.exitCode = 1; return; }
+      if (!flags.ids) { console.error(t.skipUsage); process.exitCode = 1; return; }
       const state = config.readJson(config.SKIP_STATE_PATH, {});
       for (const id of String(flags.ids).split(',')) {
         const n = Number(id.trim());
         if (n) state[n] = Date.now();
       }
       config.writeJson(config.SKIP_STATE_PATH, state);
-      console.log('✔ 已记入本地跳过记录（默认 30 天后过期重新纳入筛选）');
+      console.log(t.skipAddDone);
       return;
     }
     if (sub === 'clear') {
       config.writeJson(config.SKIP_STATE_PATH, {});
-      console.log('✔ 已清空跳过记录');
+      console.log(t.skipClearDone);
       return;
     }
     const live = loadSkipState();
     const ids = Object.keys(live);
-    console.log(ids.length ? `跳过记录 ${ids.length} 条：${ids.join(', ')}` : '跳过记录为空');
+    console.log(ids.length ? t.skipListSome(ids.length, ids.join(', ')) : t.skipListNone);
     return;
   }
 
@@ -597,35 +644,7 @@ async function main() {
 }
 
 function usage() {
-  console.log(`x6o4 —— RSS Cloud 技能命令行（配置与状态存 ~/.x6o4-tools/）
-
-用法：
-  x6o4 login [--name 名] [--scope read|readwrite]              终端交互登录换长期令牌（密码不回显）
-  x6o4 logout                    吊销本机令牌并清除本地保存（其他电脑上的令牌不受影响）
-  x6o4 status                    账号/权益/未读/收藏概览（令牌只显前缀）
-  x6o4 tokens list|revoke <编号>  查看与吊销个人令牌
-  x6o4 feeds                     订阅源与分类（含未读数；[全文]/[防盗链] 为已设置的阅读配置）
-  x6o4 feeds config --id N --full true|false --referer true|false [--referer-url 网址]
-                                 保存单源阅读设置到服务端（App 与网页面板共用；需读写令牌）
-  x6o4 entries [--status unread|read] [--starred] [--feed-id N] [--category-id N]
-              [--limit N] [--offset N] [--order ...] [--direction ...] [--content full|none]
-              [--min-reading-time N] [--fill N] [--sync] [--excerpt N] [--no-skip-state] [--print] --out 文件
-  x6o4 sync status|set <id>|reset [--category-id N | --feed-id N]
-                                 增量拉取游标查看/摆位/清零（set 把游标摆到指定条目——没处理到的未读下次还会取到；
-                                 reset 不带参数清零全局与全部筛选游标并列出原值，带筛选参数只清该筛选的游标）
-  x6o4 mark-read --ids 9001,9002
-  x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N] [--lang zh|en]
-                                 做成 epub（--from 可逗号分隔或重复传入多个文件；--max-mail-mb 一封邮件附件总体积上限，
-                                 触顶在篇边界截断并输出未入选清单与最后入选条目 id；缺省读配置 mail.max_attachment_mb；
-                                 --lang 指定书内固定文案与书名的语言，不传时读配置 epub.language，再没有就按系统环境判断）
-  x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名] [--lang zh|en]
-                                 多册时也可重复传 --file（Git Bash 下逗号分隔的路径列表不会被自动转换）；
-                                 --lang 指定邮件正文的语言，不传时的判定顺序同 build-epub
-  x6o4 export-md --from entries.json [--since 2026-01-01] [--lang zh|en]
-                                 收藏转 Markdown（--lang 只影响图片占位文字的语言）
-  x6o4 skip add --ids ... [--days 30] | list | clear
-  x6o4 skills install           把三个 AI 技能链接到 ~/.agents/skills（各助手通用）
-  x6o4 config path|show|check   配置文件位置 / 关键设置（凑篇目标与体积上限） / 完整性检查`);
+  console.log(ui().usageBody);
 }
 
 // 作为命令运行时才执行入口；被测试引入时只导出纯函数，不触发任何命令。

@@ -143,11 +143,11 @@ async function enrichEntries(entries, cfgMap = {}, { fetchImpl, stats } = {}) {
     if (r.ok) {
       st[r.reason] += 1;
       if (r.reason === 'heuristic' && !cfg && entry.feed && entry.feed.id) {
-        st.persistable.push({ id: entry.feed.id, title: (entry.feed && entry.feed.title) || `源 ${entry.feed.id}` });
+        st.persistable.push({ id: entry.feed.id, title: (entry.feed && entry.feed.title) || ui().ftFeedFallback(entry.feed.id) });
       }
     } else {
       st.failed += 1;
-      st.failedTitles.push(entry.title || `条目 ${entry.id}`);
+      st.failedTitles.push(entry.title || ui().ftEntryFallback(entry.id));
     }
   }
   return st;
@@ -155,18 +155,22 @@ async function enrichEntries(entries, cfgMap = {}, { fetchImpl, stats } = {}) {
 
 // 统计行（st 为空返回空串）；三项计数全 0 时输出「无需拉取」——让看输出的
 // 人能区分「没有需要拉取的」和「拉取环节没跑」。行尾列出「启发式成功且
-// 服务端无配置」的源，供技能或用户执行 feeds config 持久化。
+// 服务端无配置」的源，供技能或用户执行 feeds config 持久化。文案取当前
+// 界面语言表（入口在判定语言后设置；未设置时缺省中文）。
+const { ui } = require('./uitext');
+
 function fulltextLine(st) {
   if (!st) return '';
-  if (st.configured + st.heuristic + st.failed === 0) return 'ℹ 全文拉取：无需拉取（正文均已完整）';
-  let line = `ℹ 全文拉取：配置成功 ${st.configured} 篇 / 启发式成功 ${st.heuristic} 篇 / 失败保留原文 ${st.failed} 篇`;
+  const t = ui();
+  if (st.configured + st.heuristic + st.failed === 0) return t.ftNoNeed;
+  let line = t.ftLine(st.configured, st.heuristic, st.failed);
   if (st.failed && st.failedTitles.length) {
-    const shown = st.failedTitles.slice(0, 3).join('、');
-    line += `（${shown}${st.failedTitles.length > 3 ? ' 等' : ''}）`;
+    const shown = st.failedTitles.slice(0, 3).join(t.ftItemJoin);
+    line += t.ftFailedTitles(shown, st.failedTitles.length > 3);
   }
   if (st.persistable && st.persistable.length) {
-    const shown = st.persistable.slice(0, 5).map((p) => `${p.id}（${p.title}）`).join('、');
-    line += `；可保存拉取原文设置的源：${shown}${st.persistable.length > 5 ? ' 等' : ''}`;
+    const shown = st.persistable.slice(0, 5).map((p) => t.ftPersistableItem(p.id, p.title)).join(t.ftItemJoin);
+    line += t.ftPersistable(shown, st.persistable.length > 5);
   }
   return line;
 }

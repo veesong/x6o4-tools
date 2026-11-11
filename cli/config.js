@@ -5,6 +5,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// 校验提示文案取当前界面语言表（入口在判定语言后设置；未设置时缺省中文）。
+const { ui } = require('./uitext');
 
 const CONFIG_DIR = path.join(os.homedir(), '.x6o4-tools');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -35,6 +37,10 @@ const DEFAULTS = {
     language: '',
   },
   unread: { max_articles_per_run: 30 },
+  // 界面语言（终端输出的语言）：zh / en；空值（默认）= 按系统区域设置自动
+  // 判断。与 epub.language 互不影响：这里管工具对你说话，epub.language 管
+  // 做出来的电子书与邮件。
+  ui: { language: '' },
 };
 
 // 常见邮箱 SMTP 预设：端口与开关位置可能调整，以各家官方文档为准。
@@ -92,23 +98,23 @@ function check(cfg, { needKindle = false, needObsidian = false } = {}) {
   try {
     const u = new URL(cfg.base_url || OFFICIAL_BASE_URL);
     if (u.protocol === 'http:' && !isLoopback(u.href)) {
-      base_url_invalid = '服务地址为 http 且非本机回环，必须使用 https';
+      base_url_invalid = ui().chkBaseUrlHttp;
     }
   } catch {
-    base_url_invalid = '服务地址格式无效';
+    base_url_invalid = ui().chkBaseUrlInvalid;
   }
-  if (!cfg.token || !cfg.token.startsWith('xpat_')) missing.push('token（先运行 x6o4 login）');
+  if (!cfg.token || !cfg.token.startsWith('xpat_')) missing.push(ui().chkToken);
   const smtp = cfg.smtp || {};
   const obsidian = cfg.obsidian || {};
   if (needKindle) {
-    if (!cfg.kindle_email) missing.push('kindle_email（Kindle 接收邮箱）');
+    if (!cfg.kindle_email) missing.push(ui().chkKindle);
     if (cfg.mail_transport === 'agently') {
       // 发信走本机 agently-cli，无需 SMTP 配置；是否已安装登录由发送时校验。
     } else if (!smtp.host || !smtp.user || !smtp.pass) {
-      missing.push('smtp（host/user/pass，常见邮箱可用 --preset 一键填）');
+      missing.push(ui().chkSmtp);
     }
   }
-  if (needObsidian && !obsidian.vault_dir) missing.push('obsidian.vault_dir（笔记库目录）');
+  if (needObsidian && !obsidian.vault_dir) missing.push(ui().chkObsidian);
   return { ok: !base_url_invalid && missing.length === 0, missing, base_url_invalid };
 }
 

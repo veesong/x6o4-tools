@@ -19,6 +19,8 @@ const spawn = require('cross-spawn');
 const JSZip = require('jszip');
 const nodemailer = require('nodemailer');
 const { stringsFor } = require('./i18n');
+// 错误与提醒文案取当前界面语言表（入口在判定语言后设置；未设置时缺省中文）。
+const { ui } = require('./uitext');
 
 const MB = 1024 * 1024;
 const ZIP_THRESHOLD = 45 * MB;  // 附件合计超过此值 → 打包 zip
@@ -50,7 +52,7 @@ async function planGroups(files) {
       // 调用方最容易错的是自造路径或用通配符（含中文的通配符在
       // Windows 终端传递时可能编码错乱导致匹配不到）。
       if (e && e.code === 'ENOENT') {
-        throw new Error(`附件文件不存在：${abs}。build-epub 未指定 --out 时把文件生成在运行命令的目录（当前工作目录），不是 /tmp；请用 build-epub 完成行「→」后面的完整路径原样传给 --file，不要自己拼路径或用通配符`);
+        throw new Error(ui().sendAttachMissing(abs));
       }
       throw e;
     }
@@ -63,9 +65,7 @@ async function planGroups(files) {
     for (const a of items) zip.file(a.name, await fsp.readFile(a.abs));
     const zbuf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     if (zbuf.length > MAIL_HARD_LIMIT) {
-      throw new Error(`分册打包 zip 后仍为 ${(zbuf.length / MB).toFixed(1)}MB，超过亚马逊每封邮件 50MB 上限；` +
-        '请减少单次篇数（调低 unread.max_articles_per_run 或 epub.max_articles_per_book）后重试，' +
-        '或改用亚马逊 Send to Kindle 网页版手动上传（支持单个文档最大 200MB）');
+      throw new Error(ui().sendZipTooBig((zbuf.length / MB).toFixed(1)));
     }
     const zpath = path.join(os.tmpdir(), items[0].name.replace(/\.epub$/i, '') + '-bundle-' + Date.now() + '.zip');
     await fsp.writeFile(zpath, zbuf);
@@ -73,7 +73,7 @@ async function planGroups(files) {
   }
 
   if (items.some((a) => a.size > MAIL_HARD_LIMIT)) {
-    throw new Error(`单个附件超过 50MB（亚马逊个人文档邮件上限），请减少单册篇数后重试`);
+    throw new Error(ui().sendAttachTooBig);
   }
 
   // 按 50MB 与 25 个附件装袋拆多封（理论上分册正常时不触发）
@@ -200,8 +200,8 @@ async function deleteSentMessage(run, cwd, subject, sinceMs) {
   const { id, listErr } = await findSentId(run, cwd, subject, sinceMs);
   if (!id) {
     return listErr
-      ? `查询「已发送」列表失败（${listErr}），这封邮件的副本未清理`
-      : `「已发送」里没找到主题为「${subject}」的邮件，副本未清理`;
+      ? ui().sendDeleteListErr(listErr)
+      : ui().sendDeleteNotFound(subject);
   }
   return removeSentById(run, cwd, id);
 }
@@ -230,14 +230,14 @@ async function sendViaAgently(groups, cfg, { subject, lang } = {}, deps = {}) {
       // 都发生在邮件提交给服务端之前，不会产生已发出的邮件，核对列表没有
       // 意义；其余失败（超时被强制结束、异常退出码）先核对再定性。
       const hint = /ENOENT/i.test(fullText)
-        ? '未找到 agently-cli 命令，请先安装：npm install -g @tencent-qqmail/agently-cli'
+        ? ui().sendAgentlyNoCli
         : (/登录|auth|token|401/i.test(fullText)
-          ? 'agently-cli 尚未登录或登录已过期，请先在终端运行 agently-cli auth login'
+          ? ui().sendAgentlyNoAuth
           : '');
       const check = hint ? null : await findSentId(run, g.dir, subj, sinceMs, verifyPatience);
       if (check && check.id) {
         // 命令异常但邮件实际已发出：按成功处理并照常清理副本，不重发。
-        warnings.push(`发送命令异常（${fullText.trim().slice(0, 200)}），但已在「已发送」列表确认邮件实际发出，按成功处理；未重发，避免重复推送`);
+        warnings.push(ui().sendAgentlyVerified(fullText.trim().slice(0, 200)));
         const warn = await removeSentById(run, g.dir, check.id);
         if (warn) warnings.push(warn);
         sent.push(...g.files.map((a) => a.name));
@@ -245,11 +245,10 @@ async function sendViaAgently(groups, cfg, { subject, lang } = {}, deps = {}) {
       }
       const checked = check
         ? (check.listErr
-          ? `无法核对「已发送」列表（${check.listErr}）；重发前请先在邮箱的「已发送」里确认没有这封邮件，以免重复推送`
-          : '已核对「已发送」列表未发现这封邮件，可以安全重试')
-        : '这类失败发生在邮件提交之前，不会产生已发出的邮件';
-      throw new Error(`agently-cli 发送失败（${fullText.trim().slice(0, 500)}）。${checked}。${hint}` +
-        '人工兜底：亚马逊 Send to Kindle 网页版上传（单个文档最大 200MB）或数据线拷贝，epub 文件已在本地');
+          ? ui().sendAgentlyListErr(check.listErr)
+          : ui().sendAgentlyChecked)
+        : ui().sendAgentlyPreSubmit;
+      throw new Error(ui().sendAgentlyFail(fullText.trim().slice(0, 500), checked, hint));
     }
     sent.push(...g.files.map((a) => a.name));
     const warn = await deleteSentMessage(run, g.dir, subj, sinceMs);
@@ -296,8 +295,7 @@ async function sendViaSmtp(groups, cfg, { subject, lang } = {}) {
       }
     }
     if (lastErr) {
-      throw new Error(`发送失败（${lastErr.message}）。常见原因：SMTP 授权码失效、发件地址未加入亚马逊认可列表。` +
-        '人工兜底：亚马逊 Send to Kindle 网页版上传（单个文档最大 200MB）或数据线拷贝，epub 文件已在本地');
+      throw new Error(ui().sendSmtpFail(lastErr.message));
     }
     sent.push(...g.files.map((a) => a.name));
   }
@@ -307,13 +305,13 @@ async function sendViaSmtp(groups, cfg, { subject, lang } = {}) {
 // opts.lang：邮件正文与拆信主题后缀的语言（zh/en，缺省中文）；主题本身
 // 缺省取首个文件名，因此语言与书名一致。
 async function sendKindle(files, cfg, { subject, lang } = {}) {
-  if (!cfg.kindle_email) throw new Error('缺少 kindle_email（Kindle 接收邮箱）');
+  if (!cfg.kindle_email) throw new Error(ui().sendNoKindle);
   const useAgently = cfg.mail_transport === 'agently';
   if (!useAgently) {
     const smtp = cfg.smtp || {};
-    if (!smtp.host || !smtp.user || !smtp.pass) throw new Error('缺少 SMTP 配置（host/user/pass）');
+    if (!smtp.host || !smtp.user || !smtp.pass) throw new Error(ui().sendNoSmtp);
   }
-  if (!files || !files.length) throw new Error('未指定要发送的文件');
+  if (!files || !files.length) throw new Error(ui().sendNoFiles);
 
   const groups = await planGroups(files);
   const S = stringsFor(lang === 'en' ? 'en' : 'zh');

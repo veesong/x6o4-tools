@@ -87,13 +87,17 @@ function detectSystemLang() {
   return langOfLocale(systemLocale());
 }
 
+// --lang 非法值的报错文案：抛错发生在语言判定完成之前，无法按语言选表，
+// 因此固定双语（中文在前，与历史输出兼容）。
+const LANG_FLAG_ERROR = '--lang 的值只能是 zh、en 或 auto / --lang accepts only zh, en, or auto';
+
 // 检查命令行 --lang 的值：返回规范化的小写值（zh / en / auto，未传时 undefined）；
 // 值无法识别时抛错，错误信息写明可用的值。
 function parseLangFlag(v) {
   if (v === undefined) return undefined;
   const s = String(v).trim().toLowerCase();
   if (s === 'auto' || LANGS.includes(s)) return s;
-  throw new Error('--lang 的值只能是 zh、en 或 auto');
+  throw new Error(LANG_FLAG_ERROR);
 }
 
 // 判定最终语言。flag 是 parseLangFlag 的返回值，cfgValue 是配置 epub.language
@@ -109,4 +113,4 @@ function resolveLang({ flag, cfgValue, detect = detectSystemLang } = {}) {
   return { lang: detect(), cfgInvalid: raw };
 }
 
-module.exports = { LANGS, STRINGS, stringsFor, systemLocale, langOfLocale, detectSystemLang, parseLangFlag, resolveLang };
+module.exports = { LANGS, STRINGS, LANG_FLAG_ERROR, stringsFor, systemLocale, langOfLocale, detectSystemLang, parseLangFlag, resolveLang };

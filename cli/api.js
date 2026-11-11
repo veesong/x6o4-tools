@@ -1,5 +1,7 @@
 // RSS Cloud 接口客户端：统一错误体 {error_code, message} 解析为 ApiError，
-// 并对常见错误码给出中文指引。
+// 并对常见错误码给出当前界面语言的指引（uitext 由入口在判定语言后设置）。
+const { ui } = require('./uitext');
+
 class ApiError extends Error {
   constructor(status, code, message) {
     super(message || `HTTP ${status}`);
@@ -10,23 +12,24 @@ class ApiError extends Error {
 }
 
 function friendlyText(status, code, message) {
+  const t = ui();
   switch (code) {
     case 'TOKEN_INVALID':
-      return '令牌无效或已吊销（修改过密码、重置过密码、账号被封都会联动吊销），请在终端重新运行 x6o4 login';
+      return t.apiTokenInvalid;
     case 'TOKEN_SCOPE_DENIED':
-      return '当前令牌为只读权限，无法执行写操作（标记已读、保存订阅源阅读设置）；请重新运行 x6o4 login --scope readwrite';
+      return t.apiScopeDenied;
     case 'FEED_NOT_FOUND':
-      return '订阅源编号不存在；先用 x6o4 feeds 查看你的订阅源编号';
+      return t.apiFeedNotFound;
     case 'AGENT_API_DISABLED':
-      return '服务端已停用技能数据接口（AGENT_API_ENABLED=false），请联系网关管理员';
+      return t.apiAgentDisabled;
     case 'RATE_LIMITED':
-      return '请求过于频繁，请等待约一分钟再试';
+      return t.apiRateLimited;
     case 'MINIFLUX_UNAVAILABLE':
     case 'ACCOUNT_PROVISIONING_FAILED':
-      return 'RSS 上游暂时不可用或账号开通中，请稍后重试；若刚刚按编号过滤（feed/category），请先运行 x6o4 feeds 核对编号是否存在——不存在的编号同样会报这个错';
+      return t.apiUpstream;
     default:
       if (code && code.startsWith('SUBSCRIPTION_')) {
-        return `RSS Cloud 权益不足（${message || code}），续订或领取试用后即可使用`;
+        return t.apiEntitle(message || code);
       }
       return message || `HTTP ${status}`;
   }

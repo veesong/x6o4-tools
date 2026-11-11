@@ -58,20 +58,21 @@ test('未配置时命令给出登录指引并以非零退出', () => {
 
 test('sync set：全局与筛选游标摆位、非法值报错（离线）', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
+  // 断言的是中文输出，显式传 --lang zh（不依赖测试机器的系统区域设置）
   const env = { USERPROFILE: home, HOME: home };
 
-  nodeCli(['sync', 'set', '500'], env);
-  let out = nodeCli(['sync', 'status'], env);
+  nodeCli(['sync', 'set', '500', '--lang', 'zh'], env);
+  let out = nodeCli(['sync', 'status', '--lang', 'zh'], env);
   assert.ok(out.includes('增量游标（全部未读）：500'), '全局游标应摆到 500');
 
-  nodeCli(['sync', 'set', '700', '--category-id', '3'], env);
-  out = nodeCli(['sync', 'status'], env);
+  nodeCli(['sync', 'set', '700', '--category-id', '3', '--lang', 'zh'], env);
+  out = nodeCli(['sync', 'status', '--lang', 'zh'], env);
   assert.ok(out.includes('增量游标（筛选 category:3）：700'), '筛选游标应摆到 700');
   assert.ok(out.includes('增量游标（全部未读）：500'), '写筛选游标不动全局');
 
   // 回拨（窗口尾 → 实际入选末篇）是合法操作
-  nodeCli(['sync', 'set', '35'], env);
-  out = nodeCli(['sync', 'status'], env);
+  nodeCli(['sync', 'set', '35', '--lang', 'zh'], env);
+  out = nodeCli(['sync', 'status', '--lang', 'zh'], env);
   assert.ok(out.includes('增量游标（全部未读）：35'), '游标可回拨');
 
   let threw = null;
@@ -87,24 +88,24 @@ test('sync reset：全清列出原值并清空；只清筛选时保留全局并�
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
   const env = { USERPROFILE: home, HOME: home };
 
-  nodeCli(['sync', 'set', '11847'], env);
-  nodeCli(['sync', 'set', '12810', '--category-id', '2'], env);
-  nodeCli(['sync', 'set', '15716', '--category-id', '12'], env);
-  let out = nodeCli(['sync', 'reset', '--category-id', '2'], env);
+  nodeCli(['sync', 'set', '11847', '--lang', 'zh'], env);
+  nodeCli(['sync', 'set', '12810', '--category-id', '2', '--lang', 'zh'], env);
+  nodeCli(['sync', 'set', '15716', '--category-id', '12', '--lang', 'zh'], env);
+  let out = nodeCli(['sync', 'reset', '--category-id', '2', '--lang', 'zh'], env);
   assert.ok(out.includes('原值 12810'), '只清筛选时应列出该筛选原值');
   assert.ok(out.includes('全局游标 11847 之后'), '全局游标仍在时应说明起点仍受它约束');
-  out = nodeCli(['sync', 'status'], env);
+  out = nodeCli(['sync', 'status', '--lang', 'zh'], env);
   assert.ok(out.includes('增量游标（全部未读）：11847'), '只清筛选不动全局');
   assert.ok(!out.includes('category:2）'), '被清的筛选游标不再显示');
   assert.ok(out.includes('增量游标（筛选 category:12）：15716'), '其他筛选游标不受影响');
 
-  out = nodeCli(['sync', 'reset'], env);
+  out = nodeCli(['sync', 'reset', '--lang', 'zh'], env);
   assert.ok(out.includes('原值：全局 11847；筛选 category:12=15716'), '全清应列出全部原值');
-  out = nodeCli(['sync', 'status'], env);
+  out = nodeCli(['sync', 'status', '--lang', 'zh'], env);
   assert.ok(out.includes('未启用'), '全清后所有游标都应消失');
 
-  nodeCli(['sync', 'set', '700', '--category-id', '3'], env);
-  out = nodeCli(['sync', 'reset', '--category-id', '3'], env);
+  nodeCli(['sync', 'set', '700', '--category-id', '3', '--lang', 'zh'], env);
+  out = nodeCli(['sync', 'reset', '--category-id', '3', '--lang', 'zh'], env);
   assert.ok(out.includes('从最早的未读重新开始'), '没有全局游标时只清筛选即回到最早的未读');
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -112,13 +113,14 @@ test('sync reset：全清列出原值并清空；只清筛选时保留全局并�
 test('config show：显示凑篇目标与体积上限，不显示令牌（离线）', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
   const env = { USERPROFILE: home, HOME: home };
-  const out = nodeCli(['config', 'show'], env);
+  const out = nodeCli(['config', 'show', '--lang', 'zh'], env);
   assert.ok(out.includes('凑篇目标'), '应显示凑篇目标');
   assert.ok(out.includes('30'), '默认凑篇目标 30');
   assert.ok(out.includes('邮件附件体积上限'), '应显示体积上限');
   assert.ok(out.includes('45'), '默认体积上限 45MB');
   assert.ok(out.includes('文案语言：'), '应显示文案语言判定结果');
   assert.ok(out.includes('按系统环境自动判断'), '未配置 epub.language 时应说明判定来源');
+  assert.ok(out.includes('界面语言：'), '应显示界面语言判定结果');
   assert.ok(!out.includes('xpat_'), '不得显示令牌');
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -145,10 +147,13 @@ test('build-epub：配置 epub.language 生效，--lang 覆盖配置（离线）
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-build-'));
   const env = { USERPROFILE: home, HOME: home };
-  // 回环不可达地址：feeds 配置拉取即刻失败按无配置继续，全程不发外网请求
+  // 回环不可达地址：feeds 配置拉取即刻失败按无配置继续，全程不发外网请求。
+  // 界面语言钉住 zh（断言中文输出行）、epub.language=en 定书内语言——这个
+  // 用例同时验证两个字段互不影响：控制台中文、书是英文。
   fs.mkdirSync(path.join(home, '.x6o4-tools'), { recursive: true });
   fs.writeFileSync(path.join(home, '.x6o4-tools', 'config.json'), JSON.stringify({
-    base_url: 'http://127.0.0.1:1', token: 'xpat_test000000000000', epub: { language: 'en' },
+    base_url: 'http://127.0.0.1:1', token: 'xpat_test000000000000',
+    ui: { language: 'zh' }, epub: { language: 'en' },
   }));
   // 正文足够长（≥1000 字）避免全文拉取发起网络请求
   const mkEntry = (i) => ({
@@ -192,6 +197,7 @@ test('build-epub：多 --from 合并 + 体积截断输出未入选与末篇 id�
     'build-epub', '--ids', '1,2,3,4',
     '--from', [path.join(work, 'a.json'), path.join(work, 'b.json')].join(','),
     '--max-mail-mb', '1', '--title', '合并截断书', '--out', path.join(work, 'book'),
+    '--lang', 'zh',
   ], env);
   assert.ok(out.includes('1 篇'), '应只装 1 篇');
   assert.ok(out.includes('（条目 1）'), '册行应含条目编号');
@@ -224,6 +230,7 @@ test('build-epub：--from 重复传参等价于逗号列表（离线）', () => 
     'build-epub', '--ids', '1,3',
     '--from', path.join(work, 'a.json'), '--from', path.join(work, 'b.json'),
     '--title', '重复传参书', '--out', path.join(work, 'book'),
+    '--lang', 'zh',
   ], env);
   assert.ok(out.includes('2 篇'), '两个批次的文章都应入选');
   assert.ok(out.includes('（条目 1,3）'), '册行应含两个批次的条目编号');

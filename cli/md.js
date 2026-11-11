@@ -10,6 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { NodeHtmlMarkdown, NodeHtmlMarkdownTransformer } = require('node-html-markdown');
 const { backfillLazyImages } = require('./htmlclean');
+const { ui } = require('./uitext');
 const { downloadImage } = require('./imagedl');
 const config = require('./config');
 
@@ -117,7 +118,7 @@ function loadState(dir, statePath) {
 // 返回 { added: [{file,title}], skipped: n, failed: [{title,reason}] }
 async function exportMd(entries, cfg, { since, enrich, lang } = {}) {
   const ob = cfg.obsidian || {};
-  if (!ob.vault_dir) throw new Error('缺少 obsidian.vault_dir（笔记库目录）');
+  if (!ob.vault_dir) throw new Error(ui().mdNoVault);
   const dir = path.join(ob.vault_dir, ob.subdir || 'RSS');
   const assetsDir = path.join(ob.vault_dir, ob.assets_subdir || 'RSS/assets');
   await fsp.mkdir(dir, { recursive: true });

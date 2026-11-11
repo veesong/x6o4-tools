@@ -18,6 +18,7 @@ const path = require('path');
 const spawn = require('cross-spawn');
 const JSZip = require('jszip');
 const nodemailer = require('nodemailer');
+const { stringsFor } = require('./i18n');
 
 const MB = 1024 * 1024;
 const ZIP_THRESHOLD = 45 * MB;  // 附件合计超过此值 → 打包 zip
@@ -206,8 +207,10 @@ async function deleteSentMessage(run, cwd, subject, sinceMs) {
 }
 
 // deps 供测试注入假的命令执行器；verifyAttempts/verifyIntervalMs 控制发送
-// 异常后核对「已发送」列表的重试次数与间隔。
-async function sendViaAgently(groups, cfg, { subject } = {}, deps = {}) {
+// 异常后核对「已发送」列表的重试次数与间隔。lang 决定邮件正文与拆信主题
+// 后缀的语言（zh/en，缺省中文）。
+async function sendViaAgently(groups, cfg, { subject, lang } = {}, deps = {}) {
+  const S = stringsFor(lang === 'en' ? 'en' : 'zh');
   const run = deps.run || ((args, cwd, timeoutMs) => runAgently(args, cwd, timeoutMs));
   const verifyPatience = {
     attempts: deps.verifyAttempts || 4,
@@ -217,8 +220,8 @@ async function sendViaAgently(groups, cfg, { subject } = {}, deps = {}) {
   const warnings = [];
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
-    const subj = groups.length > 1 ? `${subject}（${i + 1}/${groups.length}）` : subject;
-    const body = `x6o4-tools 推送：${g.files.length} 个附件（epub 电子书）。`;
+    const subj = groups.length > 1 ? `${subject}${S.subjectPart(i + 1, groups.length)}` : subject;
+    const body = S.mailBody(g.files.length);
     const sinceMs = Date.now(); // 发信前的时间戳，用来从「已发送」里认出这封邮件
     const r = await run(agentlyArgs(g, { to: cfg.kindle_email, subject: subj, body }), g.dir, agentlyTimeoutMs(g.bytes));
     if (r.err) {
@@ -255,7 +258,8 @@ async function sendViaAgently(groups, cfg, { subject } = {}, deps = {}) {
   return { emails: groups.length, attachments: sent, warnings };
 }
 
-async function sendViaSmtp(groups, cfg, { subject }) {
+async function sendViaSmtp(groups, cfg, { subject, lang } = {}) {
+  const S = stringsFor(lang === 'en' ? 'en' : 'zh');
   const smtp = cfg.smtp || {};
   const transport = nodemailer.createTransport({
     host: smtp.host,
@@ -277,8 +281,8 @@ async function sendViaSmtp(groups, cfg, { subject }) {
     const mail = {
       from: smtp.user,
       to: cfg.kindle_email,
-      subject: groups.length > 1 ? `${subject}（${i + 1}/${groups.length}）` : subject,
-      text: `x6o4-tools 推送：${g.files.length} 个附件（epub 电子书）。发件箱 ${smtp.user} 需已加入亚马逊认可的发件人列表。`,
+      subject: groups.length > 1 ? `${subject}${S.subjectPart(i + 1, groups.length)}` : subject,
+      text: `${S.mailBody(g.files.length)}${S.mailSenderNote(smtp.user)}`,
       attachments,
     };
     let lastErr = null;
@@ -300,7 +304,9 @@ async function sendViaSmtp(groups, cfg, { subject }) {
   return { emails: groups.length, attachments: sent, warnings: [] };
 }
 
-async function sendKindle(files, cfg, { subject } = {}) {
+// opts.lang：邮件正文与拆信主题后缀的语言（zh/en，缺省中文）；主题本身
+// 缺省取首个文件名，因此语言与书名一致。
+async function sendKindle(files, cfg, { subject, lang } = {}) {
   if (!cfg.kindle_email) throw new Error('缺少 kindle_email（Kindle 接收邮箱）');
   const useAgently = cfg.mail_transport === 'agently';
   if (!useAgently) {
@@ -310,11 +316,12 @@ async function sendKindle(files, cfg, { subject } = {}) {
   if (!files || !files.length) throw new Error('未指定要发送的文件');
 
   const groups = await planGroups(files);
-  const bookTitle = subject || path.basename(files[0]).replace(/\.epub$/i, '') || 'x6o4 文章精选';
+  const S = stringsFor(lang === 'en' ? 'en' : 'zh');
+  const bookTitle = subject || path.basename(files[0]).replace(/\.epub$/i, '') || S.defaultBookTitle;
   try {
     return useAgently
-      ? await sendViaAgently(groups, cfg, { subject: bookTitle })
-      : await sendViaSmtp(groups, cfg, { subject: bookTitle });
+      ? await sendViaAgently(groups, cfg, { subject: bookTitle, lang })
+      : await sendViaSmtp(groups, cfg, { subject: bookTitle, lang });
   } finally {
     // 打包出的临时 zip 用完即删
     for (const g of groups) {

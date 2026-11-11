@@ -1,6 +1,7 @@
 // epub3 生成：清洗正文 → 图片处理管线（分级下载→按宽度缩放→灰度→
 // JPEG 重压缩，单张质量阶梯兜底）→ 组装 EPUB 3（mimetype 首条目且不压缩、题头页、
-// 目录、每篇一章）。体积有两层控制：
+// 目录、每篇一章）。书内固定文案与书名语言由 opts.lang 决定（zh/en，见 i18n.js）。
+// 体积有两层控制：
 //   1）整封邮件上限（opts.maxMailBytes，未读推送传）：按「处理后图片字节 +
 //      正文 HTML 字节」保守估算，下一篇会触顶即在篇边界整体停止装篇（截断
 //      砍尾），未入选篇目由调用方保持未读；不传（0/负）= 不限制（收藏线）。
@@ -15,6 +16,7 @@ const sharp = require('sharp');
 const { cleanHtml } = require('./htmlclean');
 const { downloadImage } = require('./imagedl');
 const { sanitizeFilename } = require('./md');
+const { stringsFor } = require('./i18n');
 
 const MB = 1024 * 1024;
 const SINGLE_IMAGE_MAX = 3 * MB;     // 单张处理后仍超 3MB 时逐级降质量兜底
@@ -52,8 +54,8 @@ async function processImageBuffer(buf, cfgEpub) {
 }
 
 // 顺序替换正文里的 <img src>：fn(url) 返回本地路径（images/NNNN.jpg）或
-// null（取不到 → 文字占位）。
-async function replaceImages(html, fn) {
+// null（取不到 → 文字占位）。S 是语言文案表（见 i18n.js）。
+async function replaceImages(html, fn, S = stringsFor('zh')) {
   const re = /<img\b[^>]*?\ssrc\s*=\s*["']([^"']+)["'][^>]*\/?>/gi;
   const parts = [];
   let last = 0;
@@ -61,7 +63,7 @@ async function replaceImages(html, fn) {
   while ((m = re.exec(html)) !== null) {
     const localPath = await fn(m[1]);
     parts.push(html.slice(last, m.index));
-    parts.push(localPath ? `<img src="${localPath}" alt="图片"/>` : '<p>[图片已省略]</p>');
+    parts.push(localPath ? `<img src="${localPath}" alt="${S.imageAlt}"/>` : `<p>${S.imageOmitted}</p>`);
     last = m.index + m[0].length;
   }
   parts.push(html.slice(last));
@@ -72,37 +74,43 @@ async function replaceImages(html, fn) {
 // entry.save_url 存在时在原文链接下方追加「收藏文章」行（v1.23）：链接由网关
 // 铸造（含签名令牌，不含个人访问令牌），点开是网关的墨水屏收藏确认页；
 // 铸造失败（只读令牌等）时 save_url 缺省，本行整体不出现。
-function chapterXhtml(entry, bodyHtml) {
+function chapterXhtml(entry, bodyHtml, S = stringsFor('zh')) {
   const meta = [
-    entry.feed && entry.feed.title ? `来源：${entry.feed.title}` : '',
-    entry.author ? `作者：${entry.author}` : '',
-    entry.published_at ? `发布：${String(entry.published_at).slice(0, 10)}` : '',
-  ].filter(Boolean).join(' ｜ ');
+    entry.feed && entry.feed.title ? `${S.sourceLabel}${entry.feed.title}` : '',
+    entry.author ? `${S.authorLabel}${entry.author}` : '',
+    entry.published_at ? `${S.publishedLabel}${String(entry.published_at).slice(0, 10)}` : '',
+  ].filter(Boolean).join(S.metaSep);
   const saveLine = entry.save_url
-    ? `\n<p class="meta"><a href="${escapeXml(entry.save_url)}">收藏文章</a></p>`
+    ? `\n<p class="meta"><a href="${escapeXml(entry.save_url)}">${S.saveArticle}</a></p>`
     : '';
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${S.langTag}">
 <head><title>${escapeXml(entry.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body>
 <h1>${escapeXml(entry.title)}</h1>
 <p class="meta">${escapeXml(meta)}</p>
 ${bodyHtml}
-<p class="meta">原文链接：<a href="${escapeXml(entry.url)}">${escapeXml(entry.url)}</a></p>${saveLine}
+<p class="meta">${S.originalLabel}<a href="${escapeXml(entry.url)}">${escapeXml(entry.url)}</a></p>${saveLine}
 </body>
 </html>`;
 }
 
-function titleXhtml(bookTitle, entries, volIdx, volCount) {
+// 本地日期 yyyy-MM-dd：题头页副行与 OPF 的 dc:date 用，与文件名日期同用本地
+// 时间（不用 UTC——东八区早上 UTC 日期还没翻转时两者会差一天）。
+function localIsoDate(now = new Date()) {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function titleXhtml(bookTitle, entries, volIdx, volCount, S = stringsFor('zh'), isoDate = localIsoDate()) {
   const items = entries.map((e, i) => `<li><a href="chapter-${pad4(i + 1)}.xhtml">${escapeXml(e.title)}</a></li>`).join('\n');
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${S.langTag}">
 <head><title>${escapeXml(bookTitle)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body>
 <h1>${escapeXml(bookTitle)}</h1>
-<p class="meta">${new Date().toISOString().slice(0, 10)}${volCount > 1 ? `（第 ${volIdx + 1}/${volCount} 册）` : ''} · 共 ${entries.length} 篇</p>
+<p class="meta">${isoDate}${volCount > 1 ? S.volumePart(volIdx, volCount) : ''} · ${S.countPart(entries.length)}</p>
 <ol class="toc">${items}</ol>
 </body>
 </html>`;
@@ -130,19 +138,19 @@ function containerXml() {
 </container>`;
 }
 
-function navXhtml(entries) {
+function navXhtml(entries, S = stringsFor('zh')) {
   const items = entries.map((e, i) => `<li><a href="chapter-${pad4(i + 1)}.xhtml">${escapeXml(e.title)}</a></li>`).join('\n');
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh">
-<head><title>目录</title></head>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${S.langTag}">
+<head><title>${S.tocTitle}</title></head>
 <body>
-<nav epub:type="toc" id="toc"><h1>目录</h1><ol>${items}</ol></nav>
+<nav epub:type="toc" id="toc"><h1>${S.tocTitle}</h1><ol>${items}</ol></nav>
 </body>
 </html>`;
 }
 
-function ncxXml(bookId, bookTitle, entries) {
+function ncxXml(bookId, bookTitle, entries, S = stringsFor('zh')) {
   const points = entries.map((e, i) => `
     <navPoint id="np${i + 1}" playOrder="${i + 2}">
       <navLabel><text>${escapeXml(e.title)}</text></navLabel>
@@ -153,13 +161,13 @@ function ncxXml(bookId, bookTitle, entries) {
 <head><meta name="dtb:uid" content="${bookId}"/><meta name="dtb:depth" content="1"/></head>
 <docTitle><text>${escapeXml(bookTitle)}</text></docTitle>
 <navMap>
-    <navPoint id="nptitle" playOrder="1"><navLabel><text>题头页</text></navLabel><content src="title.xhtml"/></navPoint>${points}
+    <navPoint id="nptitle" playOrder="1"><navLabel><text>${S.titlePageLabel}</text></navLabel><content src="title.xhtml"/></navPoint>${points}
 </navMap>
 </ncx>`;
 }
 
 // imageIds：本册引用的图片全局编号（章节正文里的 images/NNNN.jpg 与压缩包内文件一一对应）。
-function opfXml(bookId, bookTitle, entries, imageIds) {
+function opfXml(bookId, bookTitle, entries, imageIds, S = stringsFor('zh'), isoDate = localIsoDate()) {
   const chItems = entries.map((_, i) =>
     `<item id="ch${pad4(i + 1)}" href="chapter-${pad4(i + 1)}.xhtml" media-type="application/xhtml+xml"/>`).join('\n    ');
   const imItems = imageIds.map((id) =>
@@ -170,8 +178,8 @@ function opfXml(bookId, bookTitle, entries, imageIds) {
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="bookid">${bookId}</dc:identifier>
     <dc:title>${escapeXml(bookTitle)}</dc:title>
-    <dc:language>zh</dc:language>
-    <dc:date>${new Date().toISOString().slice(0, 10)}</dc:date>
+    <dc:language>${S.langTag}</dc:language>
+    <dc:date>${isoDate}</dc:date>
     <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
   </metadata>
   <manifest>
@@ -186,36 +194,37 @@ function opfXml(bookId, bookTitle, entries, imageIds) {
 </package>`;
 }
 
-// 分册标题：单册不加后缀；多册每册追加（一）（二）…
-function volumeTitle(base, idx, count) {
+// 分册标题：单册不加后缀；多册每册追加（一）（二）…（中文），英文用 (1)(2)…
+function volumeTitle(base, idx, count, S = stringsFor('zh')) {
   if (count <= 1) return base;
-  const marks = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
-  return `${base}（${marks[idx] || idx + 1}）`;
+  return `${base}${S.volumeMark(idx)}`;
 }
 
-// 默认副标题：册内首篇标题（净化后最多 SUBTITLE_MAX 字，超出截断加省略号，
-// 截断处的标点与空白去掉）；多于一篇时缀「 等N篇」，让书名能说明这是一册
-// 合集以及篇数。首篇固定不变，因此同一批文章重复生成得到相同的名字。
-const SUBTITLE_MAX = 24;
-function defaultSubtitle(entries) {
-  if (!entries.length) return '精选';
+// 默认副标题：册内首篇标题（净化后最多 S.subtitleMax 字，超出截断加省略号，
+// 截断处的标点与空白去掉）；多于一篇时追加篇数后缀（中文「等N篇」、英文
+// 「and N more」），让书名能说明这是一册合集以及篇数。首篇固定不变，因此
+// 同一批文章重复生成得到相同的名字。
+function defaultSubtitle(entries, S = stringsFor('zh')) {
+  if (!entries.length) return S.emptySubtitle;
   const first = sanitizeFilename(entries[0].title);
-  const head = first.length > SUBTITLE_MAX
-    ? `${first.slice(0, SUBTITLE_MAX).replace(/[\s，。、；：！？,.;:!?—-]+$/, '')}…`
+  const head = first.length > S.subtitleMax
+    ? `${first.slice(0, S.subtitleMax).replace(/[\s，。、；：！？,.;:!?—-]+$/, '')}…`
     : first;
-  return entries.length > 1 ? `${head} 等${entries.length}篇` : head;
+  return entries.length > 1 ? `${head}${S.countSuffix(entries.length)}` : head;
 }
 
 // ---- 主体：构建一本或多册 ----
 // entries：[{id,title,url,author,content,published_at,reading_time,feed:{title}}]
 // opts：{ title, out（文件前缀，可省扩展名）, cfg（完整配置对象，读 cfg.epub）,
-//         maxMailBytes（整封邮件体积上限，字节；0/缺省 = 不限制） }
+//         maxMailBytes（整封邮件体积上限，字节；0/缺省 = 不限制）,
+//         lang（'zh' | 'en'，缺省 zh——书内固定文案与书名语言，见 i18n.js） }
 // 返回 { volumes: [{ file, title, count, images, ids, size }],
 //        excluded: [{ id, title }]（因体积上限未入选，保持未读）,
 //        lastIncludedId }（入选序列末篇的条目 id；全被排除时为 null——首篇
 //        恒入选，只有空列表才会是 null）
 async function buildEpub(entries, opts) {
   const epubCfg = (opts.cfg && opts.cfg.epub) || {};
+  const S = stringsFor(opts.lang === 'en' ? 'en' : 'zh');
   const maxArticles = Number(epubCfg.max_articles_per_book) || 50;
   const budgetBytes = (Number(epubCfg.max_total_mb) || 20) * MB;
   const maxMailBytes = Number(opts.maxMailBytes) || 0;
@@ -224,7 +233,7 @@ async function buildEpub(entries, opts) {
   const chapters = []; // { entry, bodyHtml, images: [{id, buf}] }
   let imgSeq = 0;
   for (const entry of entries) {
-    const html = xhtmlSelfClose(cleanHtml(entry.content || ''));
+    const html = xhtmlSelfClose(cleanHtml(entry.content || '', { lang: opts.lang }));
     const images = [];
     const bodyHtml = await replaceImages(html, async (url) => {
       try {
@@ -238,7 +247,7 @@ async function buildEpub(entries, opts) {
       } catch {
         return null; // 解码失败 → 文字占位，不中断整本书
       }
-    });
+    }, S);
     chapters.push({ entry, bodyHtml, images });
   }
 
@@ -278,13 +287,15 @@ async function buildEpub(entries, opts) {
   if (cur.length) volumes.push(cur);
 
   // 第三遍：逐册组装打包
-  // 默认名「RSS 阅读-yyyyMMdd-首篇标题 等N篇」（副标题规则见 defaultSubtitle），
-  // 多册再追加（一）（二）——同一批文章重复生成得到相同文件名、直接覆盖；
-  // 同一天不同批次首篇不同，不易重名。文件名与书内书名完全一致（Kindle
-  // 书库显示文件名、多数阅读器显示内部书名，统一后两边相同）。手动指定
-  // 文件前缀或书名时，仍按「前缀-册号」「书名（一）（二）」。
+  // 默认名「RSS 阅读-yyyyMMdd-首篇标题 等N篇」（英文「RSS Digest-yyyyMMdd-
+  // 首篇标题 and N more」，前缀与副标题规则见 defaultSubtitle / i18n.js），
+  // 多册再追加（一）（二）（英文 (1)(2)）——同一批文章重复生成得到相同文件
+  // 名、直接覆盖；同一天不同批次首篇不同，不易重名。文件名与书内书名完全
+  // 一致（Kindle 书库显示文件名、多数阅读器显示内部书名，统一后两边相同）。
+  // 手动指定文件前缀或书名时，仍按「前缀-册号」「书名（一）（二）」。
   const now = new Date();
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const isoDate = localIsoDate(now); // 题头页与 dc:date 与文件名同一天（本地时区）
   const outPrefix = opts.out ? String(opts.out).replace(/\.epub$/i, '') : '';
   const results = [];
   for (let v = 0; v < volumes.length; v++) {
@@ -292,12 +303,12 @@ async function buildEpub(entries, opts) {
     let file;
     let bookTitle;
     if (outPrefix || opts.title) {
-      bookTitle = volumeTitle(opts.title || 'x6o4 文章精选', v, volumes.length);
+      bookTitle = volumeTitle(opts.title || S.defaultBookTitle, v, volumes.length, S);
       file = outPrefix
         ? (volumes.length > 1 ? `${outPrefix}-${v + 1}.epub` : `${outPrefix}.epub`)
-        : `RSS 阅读-${dateStr}-${bookTitle}.epub`;
+        : `${S.filePrefix}${dateStr}-${bookTitle}.epub`;
     } else {
-      bookTitle = volumeTitle(`RSS 阅读-${dateStr}-${defaultSubtitle(vol.map((c) => c.entry))}`, v, volumes.length);
+      bookTitle = volumeTitle(`${S.filePrefix}${dateStr}-${defaultSubtitle(vol.map((c) => c.entry), S)}`, v, volumes.length, S);
       file = `${bookTitle}.epub`;
     }
     const zip = new JSZip();
@@ -305,8 +316,8 @@ async function buildEpub(entries, opts) {
     zip.file('META-INF/container.xml', containerXml());
     const oebps = zip.folder('OEBPS');
     oebps.file('style.css', STYLE_CSS);
-    oebps.file('title.xhtml', titleXhtml(bookTitle, vol.map((c) => c.entry), v, volumes.length));
-    oebps.file('nav.xhtml', navXhtml(vol.map((c) => c.entry)));
+    oebps.file('title.xhtml', titleXhtml(bookTitle, vol.map((c) => c.entry), v, volumes.length, S, isoDate));
+    oebps.file('nav.xhtml', navXhtml(vol.map((c) => c.entry), S));
     const volEntries = vol.map((c) => c.entry);
     const imageIds = [];
     for (const ch of vol) {
@@ -316,10 +327,10 @@ async function buildEpub(entries, opts) {
       }
     }
     const bookId = `urn:uuid:${crypto.randomUUID()}`;
-    oebps.file('toc.ncx', ncxXml(bookId, bookTitle, volEntries));
-    oebps.file('content.opf', opfXml(bookId, bookTitle, volEntries, imageIds));
+    oebps.file('toc.ncx', ncxXml(bookId, bookTitle, volEntries, S));
+    oebps.file('content.opf', opfXml(bookId, bookTitle, volEntries, imageIds, S, isoDate));
     vol.forEach((ch, i) => {
-      oebps.file(`chapter-${pad4(i + 1)}.xhtml`, chapterXhtml(ch.entry, ch.bodyHtml));
+      oebps.file(`chapter-${pad4(i + 1)}.xhtml`, chapterXhtml(ch.entry, ch.bodyHtml, S));
     });
     const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     await fsp.writeFile(file, buf);

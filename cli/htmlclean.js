@@ -1,11 +1,14 @@
 // HTML 预处理与清洗（epub 与 Markdown 两条产物线共用）：
 // 1) 懒加载图片回填（data-src 等属性 → src，无法回填的移除并留占位）——RSS 正文常见懒加载标记；
 // 2) sanitize-html 白名单清洗（script/style/内嵌框架等一并剥除，双保险）。
+// 占位文字的语言跟 lang 参数走（zh/en，文案表见 i18n.js），不传时是中文。
 const sanitizeHtml = require('sanitize-html');
+const { stringsFor } = require('./i18n');
 
 const LAZY_ATTRS = ['data-src', 'data-original', 'data-lazy-src', 'data-actualsrc', 'data-echo'];
 
-function backfillLazyImages(html) {
+function backfillLazyImages(html, lang) {
+  const S = stringsFor(lang === 'en' ? 'en' : 'zh');
   return html.replace(/<img\b[^>]*>/gi, (tag) => {
     // 边界注意：data-src 里含 "src"，必须要求 src 前有空白分隔，否则懒加载图会被误判
     if (/(^|\s)src\s*=/i.test(tag)) return tag;
@@ -13,7 +16,7 @@ function backfillLazyImages(html) {
       const m = tag.match(new RegExp(attr + '\\s*=\\s*["\']([^"\']+)["\']', 'i'));
       if (m) return tag.replace(new RegExp(attr, 'i'), 'src');
     }
-    return '<p>[图片已省略]</p>'; // 修不好懒加载的图直接移除，不留坏引用
+    return `<p>${S.imageOmitted}</p>`; // 修不好懒加载的图直接移除，不留坏引用
   });
 }
 
@@ -36,8 +39,9 @@ const SANITIZE_OPTS = {
   nonTextTags: ['script', 'style', 'textarea', 'noscript', 'iframe'],
 };
 
-function cleanHtml(html) {
-  return sanitizeHtml(backfillLazyImages(html || ''), SANITIZE_OPTS);
+// opts.lang（可选）：占位段落用的语言，zh/en，缺省中文。
+function cleanHtml(html, { lang } = {}) {
+  return sanitizeHtml(backfillLazyImages(html || '', lang), SANITIZE_OPTS);
 }
 
 module.exports = { backfillLazyImages, cleanHtml, SANITIZE_OPTS };

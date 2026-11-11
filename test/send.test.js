@@ -265,6 +265,46 @@ test('sendViaAgently：未安装/未登录类失败立即报错，不核对列�
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('sendViaAgently：拆成多封时主题后缀与正文的语言跟 lang 走，缺省是中文', async () => {
+  const a = await oneGroup();
+  const b = await oneGroup();
+  const groups = [a.groups[0], b.groups[0]];
+  const seen = [];
+  let lastSubject = '';
+  // 假执行器：记录每次发送的主题与正文；「已发送」列表里给出刚发出的那封，
+  // 让发送后的副本清理一次命中，不进入等待重试。
+  const run = async (args) => {
+    const line = args.join(' ');
+    if (line.includes('+send')) {
+      lastSubject = args[args.indexOf('--subject') + 1];
+      seen.push({ subject: lastSubject, body: args[args.indexOf('--body') + 1] });
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true }) };
+    }
+    if (line.includes('+list')) {
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { data: [
+        { message_id: 'msg_1', subject: lastSubject, created_at: new Date().toISOString() },
+      ] } }) };
+    }
+    if ((line.includes('+trash') || line.includes('+delete')) && !line.includes('--confirmation-token')) {
+      return { err: null, stderr: '', stdout: JSON.stringify({ ok: true, data: { confirmation_token: 'ctk_1' } }) };
+    }
+    return { err: null, stderr: '', stdout: JSON.stringify({ ok: true }) };
+  };
+  const cfg = { kindle_email: 'k@kindle.com' };
+
+  await sendViaAgently(groups, cfg, { subject: 'Book', lang: 'en' }, { run });
+  assert.deepStrictEqual(seen.map((s) => s.subject), ['Book (1/2)', 'Book (2/2)'], '英文主题后缀');
+  assert.strictEqual(seen[0].body, 'x6o4-tools delivery: 1 epub attachment.', '英文正文');
+
+  seen.length = 0;
+  await sendViaAgently(groups, cfg, { subject: '书' }, { run });
+  assert.deepStrictEqual(seen.map((s) => s.subject), ['书（1/2）', '书（2/2）'], '不传 lang 时主题后缀是中文');
+  assert.strictEqual(seen[0].body, 'x6o4-tools 推送：1 个附件（epub 电子书）。', '不传 lang 时正文是中文');
+
+  fs.rmSync(a.dir, { recursive: true, force: true });
+  fs.rmSync(b.dir, { recursive: true, force: true });
+});
+
 // 本机已装 agently-cli 时跳过真实调用，避免测试发出邮件。探测必须用
 // cross-spawn：Windows 上 npm 全局命令是 .cmd 批处理，child_process 的
 // execFile 系列无法直接启动，会把「已安装」误判成「未安装」，该测试就会

@@ -7,6 +7,8 @@ const path = require('path');
 const JSZip = require('jszip');
 const sharp = require('sharp');
 const { buildEpub, processImageBuffer, escapeXml, xhtmlSelfClose, volumeTitle, defaultSubtitle, replaceImages, chapterXhtml } = require('../cli/epub');
+const { backfillLazyImages } = require('../cli/htmlclean');
+const { stringsFor } = require('../cli/i18n');
 
 test('escapeXml：裸 & 转义，既有实体保留', () => {
   assert.strictEqual(escapeXml('a & b &amp; c &#65; &#x41;'), 'a &amp; b &amp; c &#65; &#x41;');
@@ -206,5 +208,127 @@ test('buildEpub：不传 maxMailBytes 不限制（收藏线零影响）', async 
   const r = await buildEpub([mk(1), mk(2), mk(3)], { title: '不限书', out: path.join(dir, 'any'), cfg: { epub: {} } });
   assert.deepStrictEqual(r.excluded, []);
   assert.strictEqual(r.lastIncludedId, 3);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---- 语言：书内固定文案、书名与语言元数据按 lang 输出（中文是缺省）----
+
+// 当天的本地日期，两种写法：文件名用 yyyyMMdd，题头页与 dc:date 用 yyyy-MM-dd
+function todayParts() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return { compact: `${y}${m}${d}`, iso: `${y}-${m}-${d}` };
+}
+
+test('英文文案表：分册后缀、默认副标题、图片占位', async () => {
+  const en = stringsFor('en');
+  assert.strictEqual(volumeTitle('Book', 0, 1, en), 'Book', '单册不加后缀');
+  assert.strictEqual(volumeTitle('Book', 0, 2, en), 'Book (1)');
+  assert.strictEqual(volumeTitle('Book', 1, 2, en), 'Book (2)');
+
+  const mk = (title) => ({ title });
+  assert.strictEqual(defaultSubtitle([], en), 'Selection');
+  assert.strictEqual(defaultSubtitle([mk('Only one')], en), 'Only one', '只有一篇时不加篇数后缀');
+  assert.strictEqual(defaultSubtitle([mk('First'), mk('b'), mk('c')], en), 'First and 2 more');
+  // 英文副标题上限 48 字符：正好 48 个字符不截断
+  assert.strictEqual(defaultSubtitle([mk('B'.repeat(48))], en), 'B'.repeat(48));
+  // 第 48 个字符是逗号：截断后去掉末尾标点，再加省略号
+  const long = `${'A'.repeat(47)}, and the rest of a very long English headline`;
+  assert.strictEqual(defaultSubtitle([mk(long), mk('b')], en), `${'A'.repeat(47)}… and 1 more`);
+
+  const html = '<img src="http://x/1.png"><img src="http://x/2.png">';
+  const out = await replaceImages(html, async (url) => (url.endsWith('1.png') ? 'images/0001.jpg' : null), en);
+  assert.ok(out.includes('<img src="images/0001.jpg" alt="image"/>'));
+  assert.ok(out.includes('<p>[image omitted]</p>'));
+  assert.ok(!out.includes('图片'), '英文输出里不应有中文占位');
+});
+
+test('backfillLazyImages：无法回填的懒加载图换成占位段落，语言跟参数走', () => {
+  const html = '<p>a</p><img data-x="1"><img data-src="http://x/ok.png">';
+  const zh = backfillLazyImages(html);
+  assert.ok(zh.includes('<p>[图片已省略]</p>'), '不传语言时是中文占位');
+  assert.ok(zh.includes('<img src="http://x/ok.png">'), '能回填的懒加载图保留');
+  const en = backfillLazyImages(html, 'en');
+  assert.ok(en.includes('<p>[image omitted]</p>'));
+  assert.ok(!en.includes('图片已省略'));
+});
+
+test('buildEpub：lang=en 时书内固定文案、书名与语言元数据都是英文', async () => {
+  const mk = (i) => ({
+    id: i, title: `Article ${i}`, url: `https://e.example/${i}`, author: 'Jane',
+    published_at: '2026-10-18T00:00:00Z', reading_time: 5, feed: { title: 'Feed' },
+    save_url: `https://rss-cloud.example/ebook/save/${i}?t=1.${i}.1.sig`,
+    // 第二个 img 没有 src 也没有可回填的懒加载属性 → 清洗阶段换成占位段落
+    content: `<p>Body ${i}.</p><img data-x="1">`,
+  });
+  // 3 篇、单册上限 2 → 2 册；故意不传 out 与 title，验证默认书名
+  const { volumes } = await buildEpub([mk(1), mk(2), mk(3)], { cfg: { epub: { max_articles_per_book: 2 } }, lang: 'en' });
+  try {
+    const { compact, iso } = todayParts();
+    assert.strictEqual(volumes.length, 2);
+    assert.strictEqual(path.basename(volumes[0].file), `RSS Digest-${compact}-Article 1 and 1 more (1).epub`, '第一册：本册首篇 + 其余篇数 + 册号');
+    assert.strictEqual(path.basename(volumes[1].file), `RSS Digest-${compact}-Article 3 (2).epub`, '第二册只有一篇，不加篇数后缀');
+    assert.strictEqual(volumes[0].title, path.basename(volumes[0].file).replace(/\.epub$/, ''), '书内书名与文件名一致');
+
+    const zip = await JSZip.loadAsync(fs.readFileSync(volumes[0].file));
+    const ch = await zip.files['OEBPS/chapter-0001.xhtml'].async('string');
+    assert.match(ch, /xml:lang="en"/);
+    assert.ok(ch.includes('<p class="meta">Source: Feed | Author: Jane | Published: 2026-10-18</p>'), '页眉三项为英文，分隔符为半角竖线');
+    assert.ok(ch.includes('Original: <a href="https://e.example/1">'), '页脚原文链接为英文');
+    assert.ok(ch.includes('>Bookmark article</a>'), '收藏链接文字为英文');
+    assert.ok(ch.includes('<p>[image omitted]</p>'), '清洗阶段的图片占位为英文');
+    for (const zhText of ['来源：', '作者：', '发布：', '原文链接', '收藏文章', '图片已省略', '｜']) {
+      assert.ok(!ch.includes(zhText), `英文书的章节里不应出现「${zhText}」`);
+    }
+
+    const nav = await zip.files['OEBPS/nav.xhtml'].async('string');
+    assert.match(nav, /xml:lang="en"/);
+    assert.match(nav, /<title>Contents<\/title>/);
+    assert.match(nav, /<h1>Contents<\/h1>/);
+
+    const ncx = await zip.files['OEBPS/toc.ncx'].async('string');
+    assert.match(ncx, /<text>Title page<\/text>/);
+
+    const title = await zip.files['OEBPS/title.xhtml'].async('string');
+    assert.match(title, /xml:lang="en"/);
+    assert.ok(title.includes(`<p class="meta">${iso} (book 1 of 2) · 2 articles</p>`), '题头页副行：本地日期 + 册号 + 篇数');
+
+    const opf = await zip.files['OEBPS/content.opf'].async('string');
+    assert.match(opf, /<dc:language>en<\/dc:language>/);
+    assert.ok(opf.includes(`<dc:date>${iso}</dc:date>`), 'dc:date 用本地日期，与文件名同一天');
+  } finally {
+    // 文件生成在当前工作目录，测试后清掉
+    for (const r of volumes) {
+      try { fs.rmSync(path.resolve(r.file), { force: true }); } catch { /* 已不存在 */ }
+    }
+  }
+});
+
+test('buildEpub：不传 lang 时是中文，语言元数据与题头页副行保持原格式', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-epub-'));
+  const mk = (i) => ({
+    id: i, title: `文章${i}`, url: `https://e.example/${i}`, author: '作者',
+    published_at: '2026-10-18T00:00:00Z', reading_time: 5, feed: { title: '源' },
+    content: `<p>正文 ${i}。</p><img data-x="1">`,
+  });
+  const { volumes } = await buildEpub([mk(1), mk(2), mk(3)], {
+    title: '中文书', out: path.join(dir, 'zh'), cfg: { epub: { max_articles_per_book: 2 } },
+  });
+  const { iso } = todayParts();
+  const zip = await JSZip.loadAsync(fs.readFileSync(volumes[0].file));
+  const ch = await zip.files['OEBPS/chapter-0001.xhtml'].async('string');
+  assert.match(ch, /xml:lang="zh"/);
+  assert.ok(ch.includes('<p class="meta">来源：源 ｜ 作者：作者 ｜ 发布：2026-10-18</p>'), '页眉三项与全角竖线分隔符不变');
+  assert.ok(ch.includes('<p>[图片已省略]</p>'));
+  const nav = await zip.files['OEBPS/nav.xhtml'].async('string');
+  assert.match(nav, /<h1>目录<\/h1>/);
+  const ncx = await zip.files['OEBPS/toc.ncx'].async('string');
+  assert.match(ncx, /<text>题头页<\/text>/);
+  const title = await zip.files['OEBPS/title.xhtml'].async('string');
+  assert.ok(title.includes(`<p class="meta">${iso}（第 1/2 册） · 共 2 篇</p>`), '题头页副行格式不变（日期为本地日期）');
+  const opf = await zip.files['OEBPS/content.opf'].async('string');
+  assert.match(opf, /<dc:language>zh<\/dc:language>/);
   fs.rmSync(dir, { recursive: true, force: true });
 });

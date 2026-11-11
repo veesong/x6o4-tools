@@ -117,8 +117,58 @@ test('config show：显示凑篇目标与体积上限，不显示令牌（离线
   assert.ok(out.includes('30'), '默认凑篇目标 30');
   assert.ok(out.includes('邮件附件体积上限'), '应显示体积上限');
   assert.ok(out.includes('45'), '默认体积上限 45MB');
+  assert.ok(out.includes('文案语言：'), '应显示文案语言判定结果');
+  assert.ok(out.includes('按系统环境自动判断'), '未配置 epub.language 时应说明判定来源');
   assert.ok(!out.includes('xpat_'), '不得显示令牌');
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('--lang 值不合法：在读文件与检查配置之前就报错（离线）', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
+  const env = { USERPROFILE: home, HOME: home };
+  for (const args of [
+    ['build-epub', '--ids', '1', '--from', 'nope.json', '--lang', 'fr'],
+    ['send-kindle', '--file', 'nope.epub', '--lang', 'fr'],
+    ['export-md', '--from', 'nope.json', '--lang', 'fr'],
+  ]) {
+    let threw = null;
+    try { nodeCli(args, env); } catch (e) { threw = e; }
+    assert.ok(threw, `${args[0]} 应以非零退出码结束`);
+    const output = String(threw.stdout || '') + String(threw.stderr || '');
+    assert.ok(output.includes('--lang 的值只能是 zh、en 或 auto'), `${args[0]} 应提示可用的值`);
+    assert.ok(!output.includes('x6o4 login'), '语言值检查先于配置检查，不应出现登录指引');
+  }
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('build-epub：配置 epub.language 生效，--lang 覆盖配置（离线）', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-home-'));
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'x6o4-build-'));
+  const env = { USERPROFILE: home, HOME: home };
+  // 回环不可达地址：feeds 配置拉取即刻失败按无配置继续，全程不发外网请求
+  fs.mkdirSync(path.join(home, '.x6o4-tools'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.x6o4-tools', 'config.json'), JSON.stringify({
+    base_url: 'http://127.0.0.1:1', token: 'xpat_test000000000000', epub: { language: 'en' },
+  }));
+  // 正文足够长（≥1000 字）避免全文拉取发起网络请求
+  const mkEntry = (i) => ({
+    id: i, title: `Title ${i}`, url: `https://e.example/${i}`, author: '', published_at: '',
+    reading_time: 5, feed: { id: 1, title: 'Feed' }, content: `<p>${'正文'.repeat(1000)}</p>`,
+  });
+  fs.writeFileSync(path.join(work, 'a.json'), JSON.stringify({ total: 2, entries: [mkEntry(1), mkEntry(2)] }));
+
+  // 不带 --lang：按配置 epub.language=en 判定，默认书名与文案语言行都是英文
+  let out = nodeCli(['build-epub', '--ids', '1,2', '--from', path.join(work, 'a.json'), '--out', path.join(work, 'book-en')], env);
+  assert.ok(out.includes('x6o4 Articles：'), '配置为 en 时默认书名应为英文');
+  assert.ok(out.includes('文案语言：en'), '应输出判定结果 en');
+
+  // --lang zh 覆盖配置
+  out = nodeCli(['build-epub', '--ids', '1,2', '--from', path.join(work, 'a.json'), '--out', path.join(work, 'book-zh'), '--lang', 'zh'], env);
+  assert.ok(out.includes('x6o4 文章精选：'), '--lang zh 应覆盖配置的 en');
+  assert.ok(out.includes('文案语言：zh'));
+
+  fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(work, { recursive: true, force: true });
 });
 
 test('build-epub：多 --from 合并 + 体积截断输出未入选与末篇 id（离线）', () => {

@@ -31,6 +31,8 @@ const DEFAULTS = {
     image_grayscale: true,
     max_total_mb: 20,
     max_articles_per_book: 50,
+    // 生成物固定文案的语言：zh / en；空值（默认）= 按系统区域设置自动判断。
+    language: '',
   },
   unread: { max_articles_per_run: 30 },
 };

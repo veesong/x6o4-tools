@@ -113,8 +113,9 @@ function loadState(dir, statePath) {
 // entries：[{id,title,url,author,content,published_at,feed}]（来自 entries 命令写出的全文 JSON）
 // opts.enrich：可选的单篇正文增强钩子（全文拉取，构建命令传入；在跳过判定
 // 之后调用，避免为不会导出的条目访问原文网页）。
+// opts.lang：图片占位段落的语言（zh/en，缺省中文；frontmatter 键名不受影响）。
 // 返回 { added: [{file,title}], skipped: n, failed: [{title,reason}] }
-async function exportMd(entries, cfg, { since, enrich } = {}) {
+async function exportMd(entries, cfg, { since, enrich, lang } = {}) {
   const ob = cfg.obsidian || {};
   if (!ob.vault_dir) throw new Error('缺少 obsidian.vault_dir（笔记库目录）');
   const dir = path.join(ob.vault_dir, ob.subdir || 'RSS');
@@ -145,7 +146,7 @@ async function exportMd(entries, cfg, { since, enrich } = {}) {
         file = `${base}-${i}.md`;
       }
       if (enrich) await enrich(entry); // 拉取原文全文（失败保留原正文，见 fulltext 模块）
-      let body = nhm.translate(backfillLazyImages(entry.content || ''));
+      let body = nhm.translate(backfillLazyImages(entry.content || '', lang));
       body = body.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n'); // 换行统一 + 连续空行压缩
       if (ob.download_images !== false) {
         body = await localizeImages(body, assetsDir, entry.url, entry._imgReferer);

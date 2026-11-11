@@ -13,6 +13,7 @@ const { sendKindle } = require('./send');
 const { installSkills } = require('./skills');
 const { exportMd } = require('./md');
 const { enrichEntries, newStats, fulltextLine } = require('./fulltext');
+const { parseLangFlag, resolveLang } = require('./i18n');
 
 const SKIP_TTL_DAYS = 30;
 const MB = 1024 * 1024;
@@ -58,6 +59,20 @@ function fail(e) {
     console.error('✘ ' + (e.message || e));
   }
   process.exit(1);
+}
+
+// 生成物文案语言（zh/en）：命令行 --lang 优先，其次配置 epub.language，都没有
+// 指定时按系统区域设置判断（规则见 i18n.js）。配置值无法识别时提醒一行
+// （走 stderr，不混进正常输出），然后按系统环境继续，不中断命令。
+function langOf(flags, cfg) {
+  const { lang, cfgInvalid } = resolveLang({
+    flag: parseLangFlag(flags.lang),
+    cfgValue: (cfg.epub || {}).language,
+  });
+  if (cfgInvalid) {
+    console.error(`（配置 epub.language 的值「${cfgInvalid}」无法识别，应为 zh 或 en；本次按系统环境判断为 ${lang}）`);
+  }
+  return lang;
 }
 
 // 铸造「收藏文章」链接并挂到条目（v1.23）：链接由网关铸造（内含签名令牌，
@@ -198,6 +213,11 @@ async function main() {
       console.log(`未读推送：凑篇目标 ${cfg.unread.max_articles_per_run} 篇/次（配置 unread.max_articles_per_run）`);
       console.log(`邮件附件体积上限：${(cfg.mail || {}).max_attachment_mb} MB（配置 mail.max_attachment_mb）`);
       console.log(`电子书：单册图片预算 ${cfg.epub.max_total_mb} MB、单册篇数上限 ${cfg.epub.max_articles_per_book}`);
+      const langR = resolveLang({ cfgValue: cfg.epub.language });
+      const langSrc = langR.cfgInvalid
+        ? `配置 epub.language 的值「${langR.cfgInvalid}」无法识别，已按系统环境判断`
+        : (cfg.epub.language ? '配置 epub.language' : '按系统环境自动判断');
+      console.log(`文案语言：${langR.lang}（${langSrc}；生成与发送命令可用 --lang zh|en 临时指定）`);
       console.log(`发信方式：${cfg.mail_transport}${cfg.kindle_email ? `；Kindle 接收：${cfg.kindle_email}` : ''}`);
       return;
     }
@@ -452,8 +472,10 @@ async function main() {
   }
 
   if (cmd === 'build-epub') {
+    parseLangFlag(flags.lang); // 语言值不合法时在读文件与访问网络之前就报错
     const { cfg, client } = api();
-    if (!flags.ids || !flags.from) { console.error('用法：x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N]'); process.exitCode = 1; return; }
+    if (!flags.ids || !flags.from) { console.error('用法：x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N] [--lang zh|en]'); process.exitCode = 1; return; }
+    const lang = langOf(flags, cfg);
     const want = String(flags.ids).split(',').map((s) => Number(s.trim())).filter(Boolean);
     // --from 支持逗号分隔多文件：凑篇循环每批一个文件，这里合并成条目池
     // （重复 id 先到先得——正常批次之间天然不重复）。
@@ -483,7 +505,7 @@ async function main() {
     const ftStats = await enrichEntries(picked, await readingConfigMap(client));
     await applySaveLinks(picked, client);
     const { volumes, excluded, lastIncludedId } = await buildEpub(picked, {
-      title: flags.title, out: flags.out, cfg,
+      title: flags.title, out: flags.out, cfg, lang,
       maxMailBytes: maxMailMb > 0 ? maxMailMb * MB : 0,
     });
     for (const r of volumes) {
@@ -491,6 +513,7 @@ async function main() {
       // 调用方（AI 助手/脚本）可能把文件误认为在其他目录。
       console.log(`✔ ${r.title}：${r.count} 篇 / ${r.images} 图 / ${(r.size / MB).toFixed(1)}MB → ${path.resolve(r.file)}（条目 ${r.ids.join(',')}）`);
     }
+    console.log(`文案语言：${lang}`);
     if (excluded.length) {
       console.log(`因体积未入选 ${excluded.length} 篇（保持未读，下次自动再取）：`);
       for (const e of excluded) console.log(`  - ${e.id} ${e.title}`);
@@ -502,21 +525,23 @@ async function main() {
   }
 
   if (cmd === 'send-kindle') {
+    parseLangFlag(flags.lang);
     const { cfg } = api();
-    if (!flags.file) { console.error('用法：x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]'); process.exitCode = 1; return; }
+    if (!flags.file) { console.error('用法：x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名] [--lang zh|en]'); process.exitCode = 1; return; }
     const files = String(flags.file).split(',').map((s) => s.trim()).filter(Boolean);
-    const r = await sendKindle(files, cfg, { subject: flags.subject });
+    const r = await sendKindle(files, cfg, { subject: flags.subject, lang: langOf(flags, cfg) });
     console.log(`✔ 已发送 ${r.emails} 封邮件（附件 ${r.attachments.length} 个）到 ${cfg.kindle_email}`);
     for (const w of r.warnings || []) console.log(`⚠ ${w}（不影响本次推送）`);
     return;
   }
 
   if (cmd === 'export-md') {
+    parseLangFlag(flags.lang);
     const { cfg, client } = api();
-    if (!flags.from) { console.error('用法：x6o4 export-md --from entries.json [--since 2026-01-01]'); process.exitCode = 1; return; }
+    if (!flags.from) { console.error('用法：x6o4 export-md --from entries.json [--since 2026-01-01] [--lang zh|en]'); process.exitCode = 1; return; }
     const data = JSON.parse(fs.readFileSync(flags.from, 'utf8'));
     const hook = enrichHook(await readingConfigMap(client));
-    const r = await exportMd(data.entries || [], cfg, { since: flags.since, enrich: hook.enrich });
+    const r = await exportMd(data.entries || [], cfg, { since: flags.since, enrich: hook.enrich, lang: langOf(flags, cfg) });
     console.log(`✔ 新增 ${r.added.length} 篇，跳过 ${r.skipped.length} 篇（已导入/范围外）${r.failed.length ? `，失败 ${r.failed.length} 篇` : ''}`);
     for (const a of r.added) console.log(`  + ${a.file} ← ${a.title}`);
     for (const f of r.failed) console.log(`  ✘ ${f.title}：${f.reason}`);
@@ -589,12 +614,15 @@ function usage() {
                                  增量拉取游标查看/摆位/清零（set 把游标摆到指定条目——没处理到的未读下次还会取到；
                                  reset 不带参数清零全局与全部筛选游标并列出原值，带筛选参数只清该筛选的游标）
   x6o4 mark-read --ids 9001,9002
-  x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N]
+  x6o4 build-epub --ids 9001,9002 --from a.json[,b.json] [--title 书名] [--out 文件] [--max-mail-mb N] [--lang zh|en]
                                  做成 epub（--from 可逗号分隔或重复传入多个文件；--max-mail-mb 一封邮件附件总体积上限，
-                                 触顶在篇边界截断并输出未入选清单与最后入选条目 id；缺省读配置 mail.max_attachment_mb）
-  x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名]
-                                 多册时也可重复传 --file（Git Bash 下逗号分隔的路径列表不会被自动转换）
-  x6o4 export-md --from entries.json [--since 2026-01-01]
+                                 触顶在篇边界截断并输出未入选清单与最后入选条目 id；缺省读配置 mail.max_attachment_mb；
+                                 --lang 指定书内固定文案与书名的语言，不传时读配置 epub.language，再没有就按系统环境判断）
+  x6o4 send-kindle --file a.epub[,b.epub] [--subject 书名] [--lang zh|en]
+                                 多册时也可重复传 --file（Git Bash 下逗号分隔的路径列表不会被自动转换）；
+                                 --lang 指定邮件正文的语言，不传时的判定顺序同 build-epub
+  x6o4 export-md --from entries.json [--since 2026-01-01] [--lang zh|en]
+                                 收藏转 Markdown（--lang 只影响图片占位文字的语言）
   x6o4 skip add --ids ... [--days 30] | list | clear
   x6o4 skills install           把三个 AI 技能链接到 ~/.agents/skills（各助手通用）
   x6o4 config path|show|check   配置文件位置 / 关键设置（凑篇目标与体积上限） / 完整性检查`);
